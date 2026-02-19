@@ -32,5 +32,14 @@ raw_admins = os.getenv("ADMIN_IDS", "")
 ADMIN_IDS = set()
 if raw_admins:
     ADMIN_IDS = {int(admin_id.strip()) for admin_id in raw_admins.split(",") if admin_id.strip()}
+# ==========================
+# ID сотрудников для маршрутизации вопросов
+# ==========================
+
+# Берём ID отдела продаж из переменных окружения
+SALES_CHAT_ID = os.getenv("SALES_CHAT_ID")
+
+# Берём ID бухгалтерии
+ACCOUNTING_CHAT_ID = os.getenv("ACCOUNTING_CHAT_ID")
 
 
