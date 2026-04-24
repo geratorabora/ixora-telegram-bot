@@ -13,9 +13,15 @@ def get_main_menu() -> ReplyKeyboardMarkup:
     # Создаём кнопку "❓ Вопрос"
     btn_question = KeyboardButton(text="❓ задать вопрос")
 
+    btn_staff = KeyboardButton(text="👩‍💼 Для сотрудников")  # Новая кнопка: раздел с внутренними инструментами
+
     # Собираем клавиатуру из двух кнопок (в один ряд)
     keyboard = ReplyKeyboardMarkup(
-        keyboard=[[btn_stock, btn_question]],  # Матрица кнопок: 1 строка, 2 кнопки
+                keyboard=[  # Матрица кнопок: список рядов (каждый ряд — список кнопок)
+            [btn_stock],     # 1-й ряд: "📦 загрузить остатки"
+            [btn_question],  # 2-й ряд: "❓ задать вопрос"
+            [btn_staff],     # 3-й ряд: "👩‍💼 Для сотрудников"
+        ],
         resize_keyboard=True,  # Подгоняем размер клавиатуры под телефон
         input_field_placeholder="Выберите действие…"  # Подсказка в поле ввода
     )

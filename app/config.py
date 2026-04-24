@@ -2,9 +2,8 @@ import os  # Доступ к переменным окружения (APP_ENV и
 from dotenv import load_dotenv  # Утилита, которая читает .env файлы
 
 
-# 1) Определяем, в какой среде запускаемся:
-#    - если APP_ENV не задана, считаем, что это production ("prod")
-app_env = os.getenv("APP_ENV", "prod").lower()
+# 1) По умолчанию запускаемся в TEST (безопаснее для разработки)
+app_env = os.getenv("APP_ENV", "test").lower()
 
 # 2) Выбираем, какой env-файл загружать
 #    - prod -> .env

@@ -37,54 +37,19 @@ def get_main_inline_menu() -> InlineKeyboardMarkup:
         )
     )
 
+    # Добавляем кнопку "Для сотрудников"
+    builder.add(
+        InlineKeyboardButton(
+            text="👩‍💼 Для сотрудников",    # Текст на кнопке
+            callback_data="menu:staff"      # Идентификатор действия
+        )
+    )
+
     # Делаем кнопки в столбик: по 1 кнопке в строке
     builder.adjust(1)
 
     # Возвращаем готовую клавиатуру
     return builder.as_markup()
-def get_question_inline_menu() -> InlineKeyboardMarkup:
-    """
-    Создаём подменю "Задать вопрос".
-    """
-
-    builder = InlineKeyboardBuilder()
-
-    # Кнопка "Продажи"
-    builder.add(
-        InlineKeyboardButton(
-            text="💼 Продажи",
-            callback_data="question:sales"
-        )
-    )
-
-    # Кнопка "Бухгалтерия"
-    builder.add(
-        InlineKeyboardButton(
-            text="📊 Бухгалтерия",
-            callback_data="question:accounting"
-        )
-    )
-
-    # Кнопка "Другое"
-    builder.add(
-        InlineKeyboardButton(
-            text="👤 Другое",
-            callback_data="question:other"
-        )
-    )
-
-    # Кнопка "Назад"
-    builder.add(
-        InlineKeyboardButton(
-            text="⬅ Назад",
-            callback_data="menu:back"
-        )
-    )
-
-    builder.adjust(1)
-
-    return builder.as_markup()
-
 def get_question_inline_menu() -> InlineKeyboardMarkup:
     """
     Создаём подменю "Задать вопрос".
@@ -129,4 +94,38 @@ def get_question_inline_menu() -> InlineKeyboardMarkup:
 
     return builder.as_markup()
 
+def get_staff_inline_menu() -> InlineKeyboardMarkup:
+    """
+    Создаём подменю 'Для сотрудников'.
+    Здесь будут внутренние инструменты (XLSX/PDF обработка и т.п.)
+    """
 
+    # Создаём builder (конструктор клавиатуры)
+    builder = InlineKeyboardBuilder()
+
+    builder.add(
+        InlineKeyboardButton(
+            text="📤 Загрузить остатки",
+            callback_data="staff:upload_stock",
+        )
+    )
+
+    builder.add(
+        InlineKeyboardButton(
+            text="🔗 Объединить спецификации",
+            callback_data="staff:merge_specs",
+        )
+    )
+
+    builder.add(
+        InlineKeyboardButton(
+            text="⬅ Назад",
+            callback_data="menu:back",
+        )
+    )
+
+    # Делаем кнопки в столбик
+    builder.adjust(1)
+
+    # Возвращаем готовую клавиатуру
+    return builder.as_markup()

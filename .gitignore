@@ -19,3 +19,4 @@ __pycache__/
 # редакторы/IDE
 .vscode/
 .idea/
+config/
