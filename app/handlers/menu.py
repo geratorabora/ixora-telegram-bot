@@ -1279,11 +1279,14 @@ async def _generate_merge(message: Message, state: FSMContext, user_id: int | No
         )
         return
 
+    _fonts_dir = Path(__file__).parent.parent / "fonts"
+    _font_regular = _fonts_dir / "DejaVuSans.ttf"
+    _font_bold    = _fonts_dir / "DejaVuSans-Bold.ttf"
     try:
-        pdfmetrics.registerFont(TTFont("Arial", r"C:\Windows\Fonts\arial.ttf"))
-        pdfmetrics.registerFont(TTFont("Arial-Bold", r"C:\Windows\Fonts\arialbd.ttf"))
-    except Exception:
-        await message.answer("Не удалось зарегистрировать шрифт Arial.")
+        pdfmetrics.registerFont(TTFont("Arial", str(_font_regular)))
+        pdfmetrics.registerFont(TTFont("Arial-Bold", str(_font_bold)))
+    except Exception as _fe:
+        await message.answer(f"Не удалось зарегистрировать шрифт: {_fe}")
         return
 
     result_pdf = out_dir / f"{_base_name}.pdf"
