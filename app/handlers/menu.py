@@ -24,7 +24,7 @@ router = Router()
 # =========================
 # STAFF WHITELIST
 # =========================
-from config.access import STAFF_USER_IDS
+from app.config import STAFF_USER_IDS
 
 def is_staff(user_id: int) -> bool:
     return user_id in STAFF_USER_IDS
