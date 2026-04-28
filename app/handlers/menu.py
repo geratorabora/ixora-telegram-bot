@@ -843,10 +843,27 @@ async def on_xlsx_upload(message: Message, state: FSMContext):
     elif fname.endswith(('.xlsx', '.xls')):
         result = _parse_spec_xlsx(save_path)
         if result is None:
-            await message.answer(
-                f"❌ Не удалось распарсить: {doc.file_name}\n"
-                "Убедитесь, что файл — выгрузка из 1С УНФ со строкой-заголовком «Артикул»."
-            )
+            # Показываем структуру файла для диагностики
+            try:
+                from openpyxl import load_workbook as _lwb
+                _wb = _lwb(save_path, read_only=True, data_only=True)
+                _ws = _wb.active
+                diag_lines = [f"❌ Не удалось распарсить: <b>{doc.file_name}</b>", "",
+                              f"Листов: {len(_wb.sheetnames)} ({', '.join(_wb.sheetnames)})",
+                              f"Размер: {_ws.max_row} строк × {_ws.max_column} столбцов", "",
+                              "<b>Первые 20 строк:</b>"]
+                for r in range(1, min(21, (_ws.max_row or 0) + 1)):
+                    cells = []
+                    for c in range(1, min(6, (_ws.max_column or 0) + 1)):
+                        v = _ws.cell(r, c).value
+                        if v is not None:
+                            cells.append(f"[{str(v)[:30]}]")
+                    if cells:
+                        diag_lines.append(f"  стр{r}: {' '.join(cells)}")
+                _wb.close()
+            except Exception as _e:
+                diag_lines = [f"❌ Не удалось распарсить: {doc.file_name} ({_e})"]
+            await message.answer('\n'.join(diag_lines), parse_mode="HTML")
             return
         if str(save_path) not in spec_files:
             spec_files.append(str(save_path))
