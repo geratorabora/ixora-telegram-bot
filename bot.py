@@ -1,18 +1,20 @@
-import asyncio  # Модуль для работы с асинхронным запуском
+import asyncio
+import logging
 
-# Импортируем фабрики создания bot и dispatcher
-from app.bot import create_bot, create_dispatcher  
+from aiogram.exceptions import TelegramConflictError
 
-# Импортируем router'ы из наших модулей
+from app.bot import create_bot, create_dispatcher
 from app.handlers.start import router as start_router
 from app.handlers.id import router as id_router
-from app.handlers.upload import router as upload_router  
+from app.handlers.upload import router as upload_router
 from app.handlers.get import router as get_router
-from app.handlers.menu import router as menu_router  # <-- ДОБАВИЛИ обработчик inline-меню
+from app.handlers.menu import router as menu_router
 from app.handlers.questions import router as questions_router
 from pathlib import Path
 from datetime import datetime, timedelta
 import shutil
+
+logger = logging.getLogger(__name__)
 
 STORAGE_DIR = Path("storage")
 ARCHIVE_DIR = STORAGE_DIR / "archive"
@@ -41,13 +43,9 @@ def cleanup_old_archives(days: int = 7) -> int:
     return deleted
 
 async def main():
-    # Создаём экземпляр бота
     bot = create_bot()
-
-    # Создаём диспетчер (он управляет обработкой сообщений)
     dp = create_dispatcher()
 
-    # Подключаем роутеры (порядок не критичен)
     dp.include_router(start_router)
     dp.include_router(id_router)
     dp.include_router(upload_router)
@@ -55,12 +53,17 @@ async def main():
     dp.include_router(menu_router)
     dp.include_router(questions_router)
 
-    # Чистим архив старше 7 дней (каждый запуск)
     deleted = cleanup_old_archives(days=7)
     if deleted:
         print(f"Archive cleanup: deleted {deleted} folder(s) older than 7 days")
 
-    await dp.start_polling(bot)
+    while True:
+        try:
+            await dp.start_polling(bot)
+            break
+        except TelegramConflictError:
+            logger.warning("Another bot instance is running, retrying in 30s...")
+            await asyncio.sleep(30)
 
 
 # Точка входа в программу
