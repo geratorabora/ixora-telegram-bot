@@ -1,7 +1,7 @@
 import asyncio
 import logging
 
-from aiogram.exceptions import TelegramConflictError
+from aiogram.exceptions import TelegramConflictError, TelegramBadRequest
 
 from app.bot import create_bot, create_dispatcher
 from app.handlers.start import router as start_router
@@ -57,13 +57,16 @@ async def main():
     if deleted:
         print(f"Archive cleanup: deleted {deleted} folder(s) older than 7 days")
 
+    # Ждём пока не сможем подключиться (другой инстанс мог не успеть остановиться)
     while True:
         try:
-            await dp.start_polling(bot)
+            await bot.get_updates(offset=-1, limit=1, timeout=0)
             break
-        except TelegramConflictError:
-            logger.warning("Another bot instance is running, retrying in 30s...")
-            await asyncio.sleep(30)
+        except (TelegramConflictError, TelegramBadRequest) as e:
+            logger.warning(f"Cannot start polling yet: {e} — retrying in 60s...")
+            await asyncio.sleep(60)
+
+    await dp.start_polling(bot)
 
 
 # Точка входа в программу
