@@ -78,6 +78,7 @@ def _merge_confirm_kb() -> InlineKeyboardMarkup:
 
 def _merge_done_kb() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
+    b.add(InlineKeyboardButton(text="📄 Сформировать инвойс",   callback_data="merge:invoice"))
     b.add(InlineKeyboardButton(text="📦 АРХИВ",                 callback_data="merge:archive"))
     b.add(InlineKeyboardButton(text="✉️ Написать разработчику", url="tg://user?id=257207163"))
     b.adjust(1)
@@ -1637,6 +1638,373 @@ async def on_archive(message: Message, state: FSMContext):
 async def on_archive_cb(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     await _do_archive(callback.message, state, callback.from_user.id)
+
+
+@router.callback_query(F.data == "merge:invoice")
+async def on_invoice_cb(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await _do_invoice(callback.message, state)
+
+
+async def _do_invoice(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    parsed: list[dict] = data.get("parsed", [])
+    merged_no: str      = data.get("merged_no", "")
+    last_out_dir        = data.get("last_out_dir")
+
+    if not parsed or not merged_no or not last_out_dir:
+        await message.answer("❌ Нет данных для генерации инвойса. Сначала сформируйте спецификацию.")
+        return
+
+    out_dir = Path(last_out_dir)
+
+    all_rows: list[dict] = []
+    for spec in parsed:
+        for row in spec['rows']:
+            all_rows.append(dict(row))
+    for i, row in enumerate(all_rows, start=1):
+        row['spec_no'] = str(i)
+
+    total_qty    = sum(r['qty']    for r in all_rows)
+    total_amount = sum(r['amount'] for r in all_rows)
+
+    header   = parsed[0]
+    date_ru  = header.get('date', '')
+    date_en  = _ru_date_to_en(date_ru)
+    buyer    = header.get('buyer',    '')
+    seller   = header.get('seller',   '')
+    contract = header.get('contract', '')
+    idn      = header.get('idn',      '')
+
+    _date_parts  = date_ru.split()
+    _date_file_ru = "_".join(_date_parts) if _date_parts else merged_no
+    _date_file_en = _ru_date_to_en_brief(date_ru).replace(" ", "_") if date_ru else merged_no
+
+    _inv_base = (
+        f"Invoice_{merged_no}_dtd_{_date_file_en}"
+        if date_en else
+        f"Инвойс_{merged_no}_от_{_date_file_ru}"
+    )
+
+    # ---- 1) Excel инвойс ----
+    await message.answer("⏳ Генерирую инвойс...")
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Alignment, Font, Border, Side
+    except Exception:
+        await message.answer("❌ openpyxl не установлен.")
+        return
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Invoice"
+
+    date_bilingual = f"{_ru_date_to_en_brief(date_ru)}/{date_ru}" if date_ru else merged_no
+    ws.append(["", "InvoiceNo/Инвойс №",           merged_no])
+    ws.append(["", "dated/от",                      date_bilingual])
+    ws.append(["", "Contract No./Контракт №",        contract])
+    ws.append(["", "IDN / ИДН",                      idn])
+    ws.append(["", "Buyer/Покупатель",  buyer])
+    _r = ws.max_row
+    ws.merge_cells(f"C{_r}:I{_r}")
+    ws.cell(_r, 3).alignment = Alignment(wrap_text=True, vertical="top")
+    ws.row_dimensions[_r].height = 60
+
+    ws.append(["", "Seller / Продавец", seller])
+    _r = ws.max_row
+    ws.merge_cells(f"C{_r}:I{_r}")
+    ws.cell(_r, 3).alignment = Alignment(wrap_text=True, vertical="top")
+    ws.row_dimensions[_r].height = 60
+
+    ws.append([])
+
+    col_headers = [
+        "№", "Товары (RU)", "Description (EN)",
+        "Артикул / Item", "Код ТНВЭД / HS Code", "Изготовитель / Manufacturer",
+        "Кол-во / Qty", "Цена / Price", "Сумма / Amount",
+    ]
+    ws.append(col_headers)
+    header_row = ws.max_row
+
+    for r in all_rows:
+        ws.append([
+            r['spec_no'], r['ru_desc'], r['en_desc'],
+            r['article'], r['hs_code'], r['manufacturer'],
+            r['qty'], r['price'], r['amount'],
+        ])
+
+    ws.append([])
+    ws.append(["", "", "", "", "", "", total_qty, "Total amount", total_amount])
+    table_end_row = ws.max_row
+
+    terms_text = next((p.get('terms_text', '') for p in parsed if p.get('terms_text')), '')
+    if terms_text:
+        ws.append([])
+        for line in terms_text.split('\n'):
+            line = line.strip()
+            if line:
+                ws.append(["", line])
+
+    wrap = Alignment(wrap_text=True, vertical="top")
+    for row in ws.iter_rows(min_row=header_row, max_row=ws.max_row):
+        for cell in row:
+            cell.alignment = wrap
+    for cell in ws[header_row]:
+        cell.font = Font(bold=True)
+
+    _thin = Side(style='thin')
+    _border = Border(left=_thin, right=_thin, top=_thin, bottom=_thin)
+    for row in ws.iter_rows(min_row=header_row, max_row=table_end_row):
+        for cell in row:
+            cell.border = _border
+
+    for i, w in enumerate([5, 55, 45, 14, 14, 28, 7, 10, 12], start=1):
+        ws.column_dimensions[chr(64 + i)].width = w
+
+    ws.page_setup.orientation = 'landscape'
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+    ws.page_setup.fitToWidth  = 1
+    ws.page_setup.fitToHeight = 0
+
+    inv_xlsx = out_dir / f"{_inv_base}.xlsx"
+    wb.save(inv_xlsx)
+    await message.answer_document(FSInputFile(str(inv_xlsx)), caption="✅ Excel инвойс")
+
+    # ---- 2) PDF инвойс ----
+    try:
+        from reportlab.lib.pagesizes import A4, landscape
+        from reportlab.lib.units import mm
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
+        from reportlab.platypus import (
+            SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer,
+            KeepTogether,
+        )
+        from reportlab.platypus import Image as RLImage
+        from reportlab.lib import colors
+        from reportlab.lib.styles import getSampleStyleSheet
+    except Exception as _e:
+        await message.answer(f"❌ ReportLab не установлен: {_e}")
+        return
+
+    _fonts_dir   = Path(__file__).parent.parent / "fonts"
+    _font_regular = _fonts_dir / "DejaVuSans.ttf"
+    _font_bold    = _fonts_dir / "DejaVuSans-Bold.ttf"
+    try:
+        pdfmetrics.registerFont(TTFont("Arial", str(_font_regular)))
+        pdfmetrics.registerFont(TTFont("Arial-Bold", str(_font_bold)))
+    except Exception as _fe:
+        await message.answer(f"❌ Шрифт: {_fe}")
+        return
+
+    inv_pdf = out_dir / f"{_inv_base}.pdf"
+
+    _AVAIL_W = landscape(A4)[0] - 20 * mm
+    _AVAIL_H = landscape(A4)[1] - 20 * mm
+    _SPACER_H = 8 * mm
+    _FRAME_H  = _AVAIL_H - 12 - _SPACER_H
+
+    def _ps_inv(name, size=8, leading=10, bold=False, space_after=0):
+        from reportlab.lib.styles import ParagraphStyle
+        return ParagraphStyle(
+            name,
+            parent=getSampleStyleSheet()["Normal"],
+            fontName="Arial-Bold" if bold else "Arial",
+            fontSize=size, leading=leading, spaceAfter=space_after,
+        )
+
+    # Canvas с заголовком на каждой странице (кроме первой)
+    def _make_inv_canvas(inv_no, d_ru, d_en):
+        from reportlab.pdfgen.canvas import Canvas
+        class _InvCanvas(Canvas):
+            def __init__(self, filename, **kw):
+                super().__init__(filename, **kw)
+                self._saved_page_states = []
+            def showPage(self):
+                self._saved_page_states.append(dict(self.__dict__))
+                self._startPage()
+            def save(self):
+                total = len(self._saved_page_states)
+                for i, state in enumerate(self._saved_page_states, 1):
+                    self.__dict__.update(state)
+                    self._draw_inv_decorations(i, total, inv_no, d_ru, d_en)
+                    super().showPage()
+                super().save()
+            def _draw_inv_decorations(self, page, total, inv_no, d_ru, d_en):
+                w, h = landscape(A4)
+                self.saveState()
+                self.setFont("Arial", 7)
+                self.drawCentredString(w / 2, 6 * mm, f"стр. {page} / {total}")
+                if page > 1:
+                    self.setFont("Arial", 8)
+                    hdr = f"Инвойс / Invoice № {inv_no}  от / as of {d_ru} г. / {d_en}"
+                    self.drawString(14 * mm, h - 8 * mm, hdr)
+                self.restoreState()
+        return _InvCanvas
+
+    doc = SimpleDocTemplate(
+        str(inv_pdf),
+        pagesize=landscape(A4),
+        leftMargin=10 * mm, rightMargin=10 * mm,
+        topMargin=10 * mm, bottomMargin=10 * mm,
+    )
+
+    story = []
+
+    # Заголовок
+    title_text = (
+        f"Инвойс / Invoice № {merged_no}  "
+        f"от {date_ru} г. / as of {date_en}"
+        if date_ru else
+        f"Инвойс / Invoice № {merged_no}"
+    )
+    story.append(Paragraph(title_text, _ps_inv("Title", size=11, leading=14, bold=True, space_after=4)))
+
+    # Метаданные
+    meta_lines = []
+    if contract: meta_lines.append(f"Контракт / Contract: {contract}")
+    if idn:      meta_lines.append(f"ИДН / IDN: {idn}")
+    if buyer:    meta_lines.append(f"Покупатель / Buyer: {buyer}")
+    if seller:   meta_lines.append(f"Продавец / Seller: {seller}")
+    for ln in meta_lines:
+        story.append(Paragraph(ln, _ps_inv("Meta", size=8, leading=10, space_after=1)))
+    story.append(Spacer(1, 3))
+
+    # Таблица товаров
+    col_hdrs = ["№", "Наименование / Description", "Description (EN)",
+                 "Артикул\nItem", "ТНВЭД\nHS Code", "Изготовитель\nManufacturer",
+                 "Кол-во\nQty", "Цена\nPrice", "Сумма\nAmount"]
+    table_data = [col_hdrs]
+    for r in all_rows:
+        table_data.append([
+            r['spec_no'],
+            Paragraph(str(r['ru_desc'] or ''), _ps_inv("C")),
+            Paragraph(str(r['en_desc'] or ''), _ps_inv("C")),
+            Paragraph(str(r['article'] or ''), _ps_inv("C")),
+            str(r['hs_code'] or ''),
+            Paragraph(str(r['manufacturer'] or ''), _ps_inv("C")),
+            r['qty'],
+            f"{r['price']:,.2f}" if r['price'] else '',
+            f"{r['amount']:,.2f}",
+        ])
+
+    col_fracs = [0.03, 0.21, 0.19, 0.09, 0.08, 0.15, 0.05, 0.08, 0.09]
+    col_w = [doc.width * f for f in col_fracs]
+    tbl = Table(table_data, colWidths=col_w, repeatRows=1, hAlign="LEFT")
+    tbl.setStyle(TableStyle([
+        ("VALIGN",       (0, 0), (-1, -1), "TOP"),
+        ("ALIGN",        (0, 0), (0,  -1), "CENTER"),
+        ("ALIGN",        (6, 0), (8,  -1), "RIGHT"),
+        ("GRID",         (0, 0), (-1, -1), 0.3, colors.grey),
+        ("LEFTPADDING",  (0, 0), (-1, -1), 3),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+        ("TOPPADDING",   (0, 0), (-1, -1), 2),
+        ("BOTTOMPADDING",(0, 0), (-1, -1), 2),
+        ("BACKGROUND",   (0, 0), (-1,  0), colors.whitesmoke),
+    ]))
+    story.append(tbl)
+    story.append(Spacer(1, 4))
+    story.append(Paragraph(
+        f"Total amount: {total_amount:,.2f} USD",
+        _ps_inv("Tot", size=9, leading=11, bold=True),
+    ))
+
+    # Блок условий (термс-картинка из той же папки что и спец)
+    terms_pdf_path = data.get("terms_pdf")
+    terms_img_info = None
+    if terms_pdf_path and Path(terms_pdf_path).exists():
+        try:
+            import fitz
+            tdoc = fitz.open(terms_pdf_path)
+            tpage = tdoc[0]
+            blocks = tpage.get_text("blocks")
+            pw, ph = tpage.rect.width, tpage.rect.height
+            is_portrait = ph > pw
+
+            clip_y0 = ph
+            for bx0, by0, bx1, by1, btxt, *_ in blocks:
+                if any(kw in btxt for kw in ("Условия", "Terms", "Payment", "Delivery", "Срок")):
+                    clip_y0 = min(clip_y0, by0)
+            if clip_y0 >= ph:
+                clip_y0 = 0
+            else:
+                clip_y0 = max(0, clip_y0 - 5)
+
+            clip_y1 = ph
+            for bx0, by0, bx1, by1, btxt, *_ in blocks:
+                if by0 > clip_y0:
+                    clip_y1 = max(clip_y1, by1) if clip_y1 < ph else by1
+            clip_y1 = min(ph, clip_y1 + 60)
+
+            import fitz as _fitz
+            clip_rect = _fitz.Rect(0, clip_y0, pw, clip_y1)
+            mat = _fitz.Matrix(3, 3)
+            pix = tpage.get_pixmap(matrix=mat, clip=clip_rect)
+            tdoc.close()
+
+            terms_png = out_dir / "terms_crop_inv.png"
+            pix.save(str(terms_png))
+
+            raw_w = clip_rect.width
+            raw_h = clip_rect.height
+            scale = 1.4 if is_portrait else 1.0
+            disp_w = min(_AVAIL_W * scale, _AVAIL_W)
+            disp_h = raw_h * (disp_w / raw_w)
+            if disp_h > _FRAME_H:
+                disp_h = _FRAME_H
+                disp_w = raw_w * (disp_h / raw_h)
+            terms_img_info = (terms_png, disp_w, disp_h)
+        except Exception:
+            terms_img_info = None
+
+    if terms_img_info:
+        t_path, t_w, t_h = terms_img_info
+        story.append(KeepTogether([
+            Spacer(1, _SPACER_H),
+            RLImage(str(t_path), width=t_w, height=t_h),
+        ]))
+
+    # Блок подписей (только для инвойса)
+    _SELLER_LEFT = (
+        "Грузоотправитель / Продавец\n"
+        "Директор\n"
+        "ИП ООО \"IXORA MEDICINE\"\n\n\n"
+        "_________________________\n"
+        "Бовин В. Ю.\n"
+        "(расшифровка подписи)"
+    )
+    _SELLER_RIGHT = (
+        "ИП ООО \"IXORA MEDICINE\"  ИНН 309915658  Рег.номер 326020203217\n"
+        "Адрес: Республика Узбекистан, 100037, Ташкент, Яккасарайский район ул.Кохинур, д. 1/1.\n"
+        "Банк: АТБ \"Азия Альянс Банк\" 2а, ул Махтумкули, Яшнободский район, Ташкент, Узбекистан\n"
+        "SWIFT: ASAC UZ 22  МФО: 01095  ОКЭД: 64190\n"
+        "р/с: 20208978105572954004 EUR\n"
+        "р/с: 20208840805572954004 USD\n"
+        "р/с: 20208643905572954004 RUB\n"
+        "р/с: 20208000005572954004 UZS\n\n"
+        "Корреспондентский банк для оплат в РУБ:\n"
+        "КБ \"Москоммерцбанк\" (АО)\n"
+        "кор/счет 30111810800000058685\n"
+        "БИК 044525951  ИНН 7750005612"
+    )
+    sig_data = [[
+        Paragraph(_SELLER_LEFT.replace("\n", "<br/>"),  _ps_inv("SigL", size=8, leading=11)),
+        Paragraph(_SELLER_RIGHT.replace("\n", "<br/>"), _ps_inv("SigR", size=7, leading=9)),
+    ]]
+    sig_tbl = Table(sig_data, colWidths=[doc.width * 0.38, doc.width * 0.62])
+    sig_tbl.setStyle(TableStyle([
+        ("VALIGN",  (0, 0), (-1, -1), "TOP"),
+        ("TOPPADDING",  (0, 0), (-1, -1), 6),
+        ("LINEABOVE",   (0, 0), (-1, 0), 0.5, colors.black),
+    ]))
+    story.append(KeepTogether([Spacer(1, _SPACER_H), sig_tbl]))
+
+    doc.build(story, canvasmaker=_make_inv_canvas(merged_no, date_ru, date_en))
+
+    await message.answer_document(
+        FSInputFile(str(inv_pdf)),
+        caption="✅ PDF инвойс",
+    )
 
 
 @router.callback_query(F.data == "merge:restart")
