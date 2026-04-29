@@ -1892,6 +1892,9 @@ async def _do_invoice(message: Message, state: FSMContext) -> None:
     col_w = [doc.width * f for f in col_fracs]
     tbl = Table(table_data, colWidths=col_w, repeatRows=1, hAlign="LEFT")
     tbl.setStyle(TableStyle([
+        ("FONTNAME",     (0, 0), (-1, -1), "Arial"),
+        ("FONTSIZE",     (0, 0), (-1, -1), 8),
+        ("FONTNAME",     (0, 0), (-1,  0), "Arial-Bold"),
         ("VALIGN",       (0, 0), (-1, -1), "TOP"),
         ("ALIGN",        (0, 0), (0,  -1), "CENTER"),
         ("ALIGN",        (6, 0), (8,  -1), "RIGHT"),
@@ -1964,40 +1967,18 @@ async def _do_invoice(message: Message, state: FSMContext) -> None:
             RLImage(str(t_path), width=t_w, height=t_h),
         ]))
 
-    # Блок подписей (только для инвойса)
-    _SELLER_LEFT = (
-        "Грузоотправитель / Продавец\n"
-        "Директор\n"
-        "ИП ООО \"IXORA MEDICINE\"\n\n\n"
-        "_________________________\n"
-        "Бовин В. Ю.\n"
-        "(расшифровка подписи)"
-    )
-    _SELLER_RIGHT = (
-        "ИП ООО \"IXORA MEDICINE\"  ИНН 309915658  Рег.номер 326020203217\n"
-        "Адрес: Республика Узбекистан, 100037, Ташкент, Яккасарайский район ул.Кохинур, д. 1/1.\n"
-        "Банк: АТБ \"Азия Альянс Банк\" 2а, ул Махтумкули, Яшнободский район, Ташкент, Узбекистан\n"
-        "SWIFT: ASAC UZ 22  МФО: 01095  ОКЭД: 64190\n"
-        "р/с: 20208978105572954004 EUR\n"
-        "р/с: 20208840805572954004 USD\n"
-        "р/с: 20208643905572954004 RUB\n"
-        "р/с: 20208000005572954004 UZS\n\n"
-        "Корреспондентский банк для оплат в РУБ:\n"
-        "КБ \"Москоммерцбанк\" (АО)\n"
-        "кор/счет 30111810800000058685\n"
-        "БИК 044525951  ИНН 7750005612"
-    )
-    sig_data = [[
-        Paragraph(_SELLER_LEFT.replace("\n", "<br/>"),  _ps_inv("SigL", size=8, leading=11)),
-        Paragraph(_SELLER_RIGHT.replace("\n", "<br/>"), _ps_inv("SigR", size=7, leading=9)),
-    ]]
-    sig_tbl = Table(sig_data, colWidths=[doc.width * 0.38, doc.width * 0.62])
-    sig_tbl.setStyle(TableStyle([
-        ("VALIGN",  (0, 0), (-1, -1), "TOP"),
-        ("TOPPADDING",  (0, 0), (-1, -1), 6),
-        ("LINEABOVE",   (0, 0), (-1, 0), 0.5, colors.black),
-    ]))
-    story.append(KeepTogether([Spacer(1, _SPACER_H), sig_tbl]))
+    # Блок подписей: статичный PNG с реальной подписью, печатью и реквизитами
+    _sig_png = Path(__file__).parent.parent / "assets" / "invoice_signature.png"
+    if _sig_png.exists():
+        from PIL import Image as _PILImage
+        with _PILImage.open(str(_sig_png)) as _im:
+            _iw, _ih = _im.size
+        _sig_w = min(doc.width, _AVAIL_W)
+        _sig_h = _ih * (_sig_w / _iw)
+        story.append(KeepTogether([
+            Spacer(1, _SPACER_H),
+            RLImage(str(_sig_png), width=_sig_w, height=_sig_h),
+        ]))
 
     doc.build(story, canvasmaker=_make_inv_canvas(merged_no, date_ru, date_en))
 
