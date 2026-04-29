@@ -9,8 +9,10 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
 from pathlib import Path
+import asyncio
 import shutil
 import re
+import time
 
 from app.keyboards.inline_menu import (
     get_main_inline_menu,
@@ -818,6 +820,32 @@ async def on_merge_specs_start(callback: CallbackQuery, state: FSMContext):
 # =========================
 # 6a) XLSX upload — временный обработчик для диагностики структуры
 # =========================
+async def _debounced_status(message: Message, state: FSMContext, ts: float) -> None:
+    """Ждёт 2 с после последнего файла, затем шлёт/редактирует одно статус-сообщение."""
+    await asyncio.sleep(2)
+    data = await state.get_data()
+    if data.get('last_file_ts') != ts:
+        return  # пришёл ещё файл — эта задача устарела
+    spec_infos: list[str]     = data.get('spec_infos', [])
+    pdf_files:  list[str]     = data.get('pdf_files', [])
+    status_msg_id: int | None = data.get('status_msg_id')
+    status = _build_upload_status(spec_infos, pdf_files)
+    if status_msg_id:
+        try:
+            await message.bot.edit_message_text(
+                chat_id=message.chat.id,
+                message_id=status_msg_id,
+                text=status,
+                parse_mode="HTML",
+                reply_markup=_merge_upload_kb(),
+            )
+            return
+        except Exception:
+            pass
+    sent = await message.answer(status, parse_mode="HTML", reply_markup=_merge_upload_kb())
+    await state.update_data(status_msg_id=sent.message_id)
+
+
 @router.message(MergeSpec.waiting_pdfs, F.document)
 async def on_xlsx_upload(message: Message, state: FSMContext):
     doc = message.document
@@ -884,23 +912,10 @@ async def on_xlsx_upload(message: Message, state: FSMContext):
         await message.answer("Пожалуйста, пришлите PDF или XLSX файл.")
         return
 
-    # Обновляем единственное статус-сообщение (редактируем, если уже есть)
-    status = _build_upload_status(spec_infos, pdf_files)
-    if status_msg_id:
-        try:
-            await message.bot.edit_message_text(
-                chat_id=message.chat.id,
-                message_id=status_msg_id,
-                text=status,
-                parse_mode="HTML",
-                reply_markup=_merge_upload_kb(),
-            )
-            return
-        except Exception:
-            pass  # сообщение удалено или недоступно — шлём новое
-
-    sent = await message.answer(status, parse_mode="HTML", reply_markup=_merge_upload_kb())
-    await state.update_data(status_msg_id=sent.message_id)
+    # Debounce: ждём 2 с после последнего файла, затем шлём одно статус-сообщение
+    now = time.time()
+    await state.update_data(last_file_ts=now)
+    asyncio.create_task(_debounced_status(message, state, now))
 
 
 # =========================
