@@ -1912,62 +1912,7 @@ async def _do_invoice(message: Message, state: FSMContext) -> None:
         _ps_inv("Tot", size=9, leading=11, bold=True),
     ))
 
-    # Блок условий (термс-картинка из той же папки что и спец)
-    terms_pdf_path = data.get("terms_pdf")
-    terms_img_info = None
-    if terms_pdf_path and Path(terms_pdf_path).exists():
-        try:
-            import fitz
-            tdoc = fitz.open(terms_pdf_path)
-            tpage = tdoc[0]
-            blocks = tpage.get_text("blocks")
-            pw, ph = tpage.rect.width, tpage.rect.height
-            is_portrait = ph > pw
-
-            clip_y0 = ph
-            for bx0, by0, bx1, by1, btxt, *_ in blocks:
-                if any(kw in btxt for kw in ("Условия", "Terms", "Payment", "Delivery", "Срок")):
-                    clip_y0 = min(clip_y0, by0)
-            if clip_y0 >= ph:
-                clip_y0 = 0
-            else:
-                clip_y0 = max(0, clip_y0 - 5)
-
-            clip_y1 = ph
-            for bx0, by0, bx1, by1, btxt, *_ in blocks:
-                if by0 > clip_y0:
-                    clip_y1 = max(clip_y1, by1) if clip_y1 < ph else by1
-            clip_y1 = min(ph, clip_y1 + 60)
-
-            import fitz as _fitz
-            clip_rect = _fitz.Rect(0, clip_y0, pw, clip_y1)
-            mat = _fitz.Matrix(3, 3)
-            pix = tpage.get_pixmap(matrix=mat, clip=clip_rect)
-            tdoc.close()
-
-            terms_png = out_dir / "terms_crop_inv.png"
-            pix.save(str(terms_png))
-
-            raw_w = clip_rect.width
-            raw_h = clip_rect.height
-            scale = 1.4 if is_portrait else 1.0
-            disp_w = min(_AVAIL_W * scale, _AVAIL_W)
-            disp_h = raw_h * (disp_w / raw_w)
-            if disp_h > _FRAME_H:
-                disp_h = _FRAME_H
-                disp_w = raw_w * (disp_h / raw_h)
-            terms_img_info = (terms_png, disp_w, disp_h)
-        except Exception:
-            terms_img_info = None
-
-    if terms_img_info:
-        t_path, t_w, t_h = terms_img_info
-        story.append(KeepTogether([
-            Spacer(1, _SPACER_H),
-            RLImage(str(t_path), width=t_w, height=t_h),
-        ]))
-
-    # Блок подписей: статичный PNG с реальной подписью, печатью и реквизитами
+    # Блок подписи: статичный PNG с реальной подписью, печатью и реквизитами
     _sig_png = Path(__file__).parent.parent / "assets" / "invoice_signature.png"
     if _sig_png.exists():
         from PIL import Image as _PILImage
