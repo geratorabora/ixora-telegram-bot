@@ -119,6 +119,13 @@ def get_staff_inline_menu() -> InlineKeyboardMarkup:
 
     builder.add(
         InlineKeyboardButton(
+            text="📝 Письмо об утере инвойса",
+            callback_data="staff:lost_invoice_letter",
+        )
+    )
+
+    builder.add(
+        InlineKeyboardButton(
             text="⬅ Назад",
             callback_data="menu:back",
         )

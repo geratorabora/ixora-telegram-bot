@@ -1,5 +1,6 @@
 *.ttf binary
 *.otf binary
 *.pdf binary
+*.docx binary
 *.xlsx binary
 *.xls binary

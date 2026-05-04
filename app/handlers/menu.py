@@ -6,6 +6,7 @@ from aiogram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton,
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.filters import StateFilter
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
 from pathlib import Path
@@ -13,6 +14,8 @@ import asyncio
 import shutil
 import re
 import time
+import sqlite3
+from datetime import datetime
 
 from app.keyboards.inline_menu import (
     get_main_inline_menu,
@@ -64,6 +67,19 @@ class MergeSpec(StatesGroup):
     waiting_pdfs = State()   # ждём PDF-ы спецификаций
     confirm     = State()    # подтверждаем / правим номер итогового документа
 
+class LostInvoiceLetter(StatesGroup):
+    waiting_company      = State()
+    waiting_country      = State()
+    waiting_letter_no    = State()
+    waiting_letter_date  = State()
+    waiting_awb          = State()
+    waiting_places       = State()
+    waiting_weight       = State()
+    waiting_amount       = State()
+    waiting_invoice_no   = State()
+    waiting_invoice_date = State()
+    waiting_signature    = State()
+
 
 def _merge_upload_kb() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
@@ -105,6 +121,201 @@ def _build_upload_status(spec_infos: list[str], pdf_files: list[str]) -> str:
     else:
         lines.append("  ⚠️ Не загружен — нужен для блока подписей")
     return '\n'.join(lines)
+
+
+# =========================
+# Мастер "Письмо об утере инвойса"
+# =========================
+SIGNATURE_DB = STORAGE_DIR / "signatures.sqlite3"
+SIGNATURE_DIR = STORAGE_DIR / "signatures"
+LOST_INVOICE_TEMPLATE = Path(__file__).parent.parent / "assets" / "lost_invoice_letter_template.docx"
+LOST_INVOICE_DOC_TYPE = "lost_invoice_letter"
+
+_LOST_STEPS = [
+    ("company",      LostInvoiceLetter.waiting_company.state,      "Введите название компании на английском, как должно быть в письме."),
+    ("country",      LostInvoiceLetter.waiting_country.state,      "Введите страну компании."),
+    ("letter_no",    LostInvoiceLetter.waiting_letter_no.state,    "Введите номер письма. Если подходит автономер — напишите <b>-</b>."),
+    ("letter_date",  LostInvoiceLetter.waiting_letter_date.state,  "Введите дату письма. Если подходит сегодняшняя дата — напишите <b>-</b>."),
+    ("awb_no",       LostInvoiceLetter.waiting_awb.state,          "Введите номер авианакладной."),
+    ("places",       LostInvoiceLetter.waiting_places.state,       "Введите количество мест."),
+    ("weight_kg",    LostInvoiceLetter.waiting_weight.state,       "Введите вес, кг."),
+    ("amount",       LostInvoiceLetter.waiting_amount.state,       "Введите сумму и валюту, например: <b>12 345,67 USD</b>."),
+    ("invoice_no",   LostInvoiceLetter.waiting_invoice_no.state,   "Введите номер инвойса."),
+    ("invoice_date", LostInvoiceLetter.waiting_invoice_date.state, "Введите дату инвойса."),
+]
+
+_LOST_NEXT_STATE = {
+    _LOST_STEPS[i][1]: _LOST_STEPS[i + 1][1]
+    for i in range(len(_LOST_STEPS) - 1)
+}
+_LOST_FIELD_BY_STATE = {state: field for field, state, _ in _LOST_STEPS}
+_LOST_PROMPT_BY_STATE = {state: prompt for _, state, prompt in _LOST_STEPS}
+
+
+def _init_signature_db() -> None:
+    SIGNATURE_DIR.mkdir(parents=True, exist_ok=True)
+    SIGNATURE_DB.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(SIGNATURE_DB) as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS signature_blocks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_key TEXT NOT NULL,
+                company_name TEXT NOT NULL,
+                country TEXT NOT NULL,
+                doc_type TEXT NOT NULL,
+                image_path TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(company_key, doc_type)
+            )
+            """
+        )
+
+
+def _normalize_key(value: str) -> str:
+    value = value.lower().strip()
+    value = re.sub(r"[^a-zа-яё0-9]+", "_", value, flags=re.IGNORECASE)
+    return value.strip("_") or "company"
+
+
+def _safe_filename(value: str, fallback: str = "file") -> str:
+    value = re.sub(r'[<>:"/\\|?*\n\r\t]+', "_", value).strip(" ._")
+    return value[:90] or fallback
+
+
+def _default_letter_no() -> str:
+    return datetime.now().strftime("%y%m%d") + "01"
+
+
+def _default_letter_date() -> str:
+    return datetime.now().strftime("%d.%m.%y")
+
+
+def _signature_for(company: str, country: str, doc_type: str = LOST_INVOICE_DOC_TYPE) -> Path | None:
+    _init_signature_db()
+    company_key = _normalize_key(f"{company}_{country}")
+    with sqlite3.connect(SIGNATURE_DB) as conn:
+        row = conn.execute(
+            """
+            SELECT image_path
+            FROM signature_blocks
+            WHERE company_key = ? AND doc_type = ?
+            """,
+            (company_key, doc_type),
+        ).fetchone()
+    if not row:
+        return None
+    path = Path(row[0])
+    return path if path.exists() else None
+
+
+def _save_signature(company: str, country: str, image_path: Path, doc_type: str = LOST_INVOICE_DOC_TYPE) -> None:
+    _init_signature_db()
+    company_key = _normalize_key(f"{company}_{country}")
+    now = datetime.now().isoformat(timespec="seconds")
+    with sqlite3.connect(SIGNATURE_DB) as conn:
+        conn.execute(
+            """
+            INSERT INTO signature_blocks
+                (company_key, company_name, country, doc_type, image_path, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(company_key, doc_type) DO UPDATE SET
+                company_name = excluded.company_name,
+                country      = excluded.country,
+                image_path   = excluded.image_path,
+                updated_at   = excluded.updated_at
+            """,
+            (company_key, company, country, doc_type, str(image_path), now, now),
+        )
+
+
+async def _ask_lost_step(message: Message, state_name: str) -> None:
+    await message.answer(_LOST_PROMPT_BY_STATE[state_name], parse_mode="HTML")
+
+
+def _replace_docx_paragraph(paragraph, replacements: dict[str, str], signature_path: Path | None) -> None:
+    text = "".join(run.text for run in paragraph.runs) if paragraph.runs else paragraph.text
+    if not text:
+        return
+
+    signature_placeholder = "(блок печати и подписи)"
+    if signature_placeholder in text:
+        new_text = text.replace(signature_placeholder, "").strip()
+        paragraph.clear()
+        if new_text:
+            paragraph.add_run(new_text)
+            paragraph.add_run().add_break()
+        if signature_path and signature_path.exists():
+            from docx.shared import Cm
+            paragraph.add_run().add_picture(str(signature_path), width=Cm(15))
+        return
+
+    new_text = text
+    for src, dst in replacements.items():
+        new_text = new_text.replace(src, dst)
+    if new_text != text:
+        paragraph.clear()
+        paragraph.add_run(new_text)
+
+
+def _fill_lost_invoice_template(data: dict, signature_path: Path, out_path: Path) -> None:
+    from docx import Document
+
+    doc = Document(str(LOST_INVOICE_TEMPLATE))
+    company_country = f"{data['company']}, {data['country']}"
+    replacements = {
+        "(YYMMDD01)": data["letter_no"],
+        "(DDMMYY)": data["letter_date"],
+        "(Company name, Country)": company_country,
+        "(Company name, country)": company_country,
+        "(номер авианакладной)": data["awb_no"],
+        "(кол-во мест)": data["places"],
+        "(вес, кг)": data["weight_kg"],
+        "(Сумма, валюта)": data["amount"],
+        "(номер инвойса)": data["invoice_no"],
+        "(дата инвойса)": data["invoice_date"],
+    }
+
+    for p in doc.paragraphs:
+        _replace_docx_paragraph(p, replacements, signature_path)
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for p in cell.paragraphs:
+                    _replace_docx_paragraph(p, replacements, signature_path)
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    doc.save(str(out_path))
+
+
+async def _finish_lost_invoice_letter(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    letter = data.get("lost_invoice", {})
+    signature_path = _signature_for(letter["company"], letter["country"])
+    if not signature_path:
+        await state.set_state(LostInvoiceLetter.waiting_signature)
+        await message.answer(
+            "Для этой компании пока нет сохранённого блока печати и подписи.\n"
+            "Пришлите картинку PNG/JPG — я сохраню её в базу и вставлю в письмо."
+        )
+        return
+
+    user_dir = TMP_DIR / str(message.from_user.id) / "lost_invoice_letter"
+    user_dir.mkdir(parents=True, exist_ok=True)
+    out_name = (
+        f"Письмо_об_утере_инвойса_"
+        f"{_safe_filename(letter['company'])}_"
+        f"{_safe_filename(letter['letter_date'])}.docx"
+    )
+    out_path = user_dir / out_name
+    _fill_lost_invoice_template(letter, signature_path, out_path)
+    await state.clear()
+    await message.answer_document(
+        FSInputFile(str(out_path)),
+        caption="✅ Письмо об утере инвойса готово",
+        reply_markup=get_staff_inline_menu(),
+    )
 
 # =========================
 # Парсер спецификации
@@ -781,7 +992,118 @@ async def on_upload_stock_cancel(message: Message, state: FSMContext):
 
 
 # =========================
-# 5b) Запуск мастера
+# 5b) Письмо об утере инвойса (staff only)
+# =========================
+@router.callback_query(F.data == "staff:lost_invoice_letter")
+async def on_lost_invoice_start(callback: CallbackQuery, state: FSMContext):
+    user_id = callback.from_user.id
+    allowed = is_staff(user_id)
+    log_staff_event(user_id, callback.from_user.username, "staff:lost_invoice_letter", allowed)
+    if not allowed:
+        await deny_staff_access(callback, action="staff:lost_invoice_letter")
+        return
+
+    await state.set_state(LostInvoiceLetter.waiting_company)
+    await state.update_data(lost_invoice={})
+    await callback.message.edit_text(
+        "📝 Письмо об утере инвойса\n\n"
+        "Я задам вопросы по бланку, потом соберу DOCX.\n"
+        "Если блок печати и подписи для этой компании уже сохранён — возьму его из базы.\n\n"
+        "Введите название компании на английском, как должно быть в письме.",
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router.message(
+    StateFilter(
+        LostInvoiceLetter.waiting_company,
+        LostInvoiceLetter.waiting_country,
+        LostInvoiceLetter.waiting_letter_no,
+        LostInvoiceLetter.waiting_letter_date,
+        LostInvoiceLetter.waiting_awb,
+        LostInvoiceLetter.waiting_places,
+        LostInvoiceLetter.waiting_weight,
+        LostInvoiceLetter.waiting_amount,
+        LostInvoiceLetter.waiting_invoice_no,
+        LostInvoiceLetter.waiting_invoice_date,
+    ),
+    F.text,
+)
+async def on_lost_invoice_text(message: Message, state: FSMContext):
+    if message.text and message.text.lower().strip() == "отмена":
+        await state.clear()
+        await message.answer("Ок, отменил создание письма.", reply_markup=get_staff_inline_menu())
+        return
+
+    current = await state.get_state()
+    field = _LOST_FIELD_BY_STATE.get(current or "")
+    if not field:
+        await message.answer("Не понял, на каком шаге мы находимся. Начните мастер заново.")
+        await state.clear()
+        return
+
+    value = (message.text or "").strip()
+    if field == "letter_no" and value == "-":
+        value = _default_letter_no()
+    elif field == "letter_date" and value == "-":
+        value = _default_letter_date()
+
+    data = await state.get_data()
+    letter = data.get("lost_invoice", {})
+    letter[field] = value
+    await state.update_data(lost_invoice=letter)
+
+    next_state = _LOST_NEXT_STATE.get(current or "")
+    if next_state:
+        await state.set_state(next_state)
+        await _ask_lost_step(message, next_state)
+        return
+
+    await _finish_lost_invoice_letter(message, state)
+
+
+@router.message(LostInvoiceLetter.waiting_signature, F.photo | F.document)
+async def on_lost_invoice_signature(message: Message, state: FSMContext):
+    data = await state.get_data()
+    letter = data.get("lost_invoice", {})
+    if not letter:
+        await state.clear()
+        await message.answer("Данные письма потерялись. Запустите мастер заново.", reply_markup=get_staff_inline_menu())
+        return
+
+    company_key = _normalize_key(f"{letter['company']}_{letter['country']}")
+    sig_dir = SIGNATURE_DIR / company_key
+    sig_dir.mkdir(parents=True, exist_ok=True)
+
+    if message.photo:
+        file_id = message.photo[-1].file_id
+        ext = ".jpg"
+    else:
+        doc = message.document
+        fname = (doc.file_name or "").lower()
+        ext = Path(fname).suffix.lower()
+        if ext not in (".png", ".jpg", ".jpeg"):
+            await message.answer("Нужна картинка PNG/JPG с блоком печати и подписи.")
+            return
+        file_id = doc.file_id
+
+    tg_file = await message.bot.get_file(file_id)
+    sig_path = sig_dir / f"{LOST_INVOICE_DOC_TYPE}{ext}"
+    await message.bot.download_file(tg_file.file_path, destination=str(sig_path))
+    _save_signature(letter["company"], letter["country"], sig_path)
+
+    await message.answer("✅ Блок печати и подписи сохранил в базу. Собираю письмо...")
+    await _finish_lost_invoice_letter(message, state)
+
+
+@router.message(LostInvoiceLetter.waiting_signature)
+async def on_lost_invoice_signature_wrong(message: Message):
+    await message.answer("Пришлите картинку PNG/JPG с блоком печати и подписи.")
+
+
+# =========================
+# 5c) Запуск мастера
 # =========================
 @router.callback_query(F.data == "staff:merge_specs")
 async def on_merge_specs_start(callback: CallbackQuery, state: FSMContext):
