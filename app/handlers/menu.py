@@ -15,6 +15,7 @@ import shutil
 import re
 import time
 import sqlite3
+import os
 from datetime import datetime
 
 from app.keyboards.inline_menu import (
@@ -108,6 +109,21 @@ def _archive_done_kb() -> InlineKeyboardMarkup:
     b.adjust(1)
     return b.as_markup()
 
+def _lost_company_kb(companies: list[dict]) -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    for c in companies[:20]:
+        label = f"{c['company_name']}, {c['country']}"
+        b.add(InlineKeyboardButton(
+            text=label[:60],
+            callback_data=f"lost_company:{c['id']}",
+        ))
+    b.add(InlineKeyboardButton(
+        text="➕ Ввести новую компанию",
+        callback_data="lost_company:new",
+    ))
+    b.adjust(1)
+    return b.as_markup()
+
 def _build_upload_status(spec_infos: list[str], pdf_files: list[str]) -> str:
     n_xlsx = len(spec_infos)
     n_pdf  = len(pdf_files)
@@ -154,23 +170,57 @@ _LOST_PROMPT_BY_STATE = {state: prompt for _, state, prompt in _LOST_STEPS}
 
 def _init_signature_db() -> None:
     SIGNATURE_DIR.mkdir(parents=True, exist_ok=True)
-    SIGNATURE_DB.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(SIGNATURE_DB) as conn:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS signature_blocks (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                company_key TEXT NOT NULL,
-                company_name TEXT NOT NULL,
-                country TEXT NOT NULL,
-                doc_type TEXT NOT NULL,
-                image_path TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                UNIQUE(company_key, doc_type)
+    if _signature_db_url():
+        import psycopg
+        with psycopg.connect(_signature_db_url()) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS signature_blocks (
+                        id BIGSERIAL PRIMARY KEY,
+                        company_key TEXT NOT NULL,
+                        company_name TEXT NOT NULL,
+                        country TEXT NOT NULL,
+                        doc_type TEXT NOT NULL,
+                        image_path TEXT,
+                        image_ext TEXT,
+                        image_data BYTEA,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        UNIQUE(company_key, doc_type)
+                    )
+                    """
+                )
+            conn.commit()
+    else:
+        SIGNATURE_DB.parent.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(SIGNATURE_DB) as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS signature_blocks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    company_key TEXT NOT NULL,
+                    company_name TEXT NOT NULL,
+                    country TEXT NOT NULL,
+                    doc_type TEXT NOT NULL,
+                    image_path TEXT,
+                    image_ext TEXT,
+                    image_data BLOB,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(company_key, doc_type)
+                )
+                """
             )
-            """
-        )
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(signature_blocks)").fetchall()}
+            if "image_ext" not in cols:
+                conn.execute("ALTER TABLE signature_blocks ADD COLUMN image_ext TEXT")
+            if "image_data" not in cols:
+                conn.execute("ALTER TABLE signature_blocks ADD COLUMN image_data BLOB")
+
+
+def _signature_db_url() -> str | None:
+    return os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URL")
 
 
 def _normalize_key(value: str) -> str:
@@ -192,42 +242,161 @@ def _default_letter_date() -> str:
     return datetime.now().strftime("%d.%m.%y")
 
 
+def _materialize_signature(company: str, country: str, image_data: bytes | memoryview | None, image_ext: str | None, image_path: str | None) -> Path | None:
+    if image_data:
+        company_key = _normalize_key(f"{company}_{country}")
+        ext = image_ext or ".png"
+        if not ext.startswith("."):
+            ext = "." + ext
+        sig_dir = SIGNATURE_DIR / company_key
+        sig_dir.mkdir(parents=True, exist_ok=True)
+        out = sig_dir / f"{LOST_INVOICE_DOC_TYPE}{ext}"
+        out.write_bytes(bytes(image_data))
+        return out
+    if image_path:
+        path = Path(image_path)
+        return path if path.exists() else None
+    return None
+
+
 def _signature_for(company: str, country: str, doc_type: str = LOST_INVOICE_DOC_TYPE) -> Path | None:
     _init_signature_db()
     company_key = _normalize_key(f"{company}_{country}")
-    with sqlite3.connect(SIGNATURE_DB) as conn:
-        row = conn.execute(
-            """
-            SELECT image_path
-            FROM signature_blocks
-            WHERE company_key = ? AND doc_type = ?
-            """,
-            (company_key, doc_type),
-        ).fetchone()
+    if _signature_db_url():
+        import psycopg
+        with psycopg.connect(_signature_db_url()) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT company_name, country, image_data, image_ext, image_path
+                    FROM signature_blocks
+                    WHERE company_key = %s AND doc_type = %s
+                    """,
+                    (company_key, doc_type),
+                )
+                row = cur.fetchone()
+    else:
+        with sqlite3.connect(SIGNATURE_DB) as conn:
+            row = conn.execute(
+                """
+                SELECT company_name, country, image_data, image_ext, image_path
+                FROM signature_blocks
+                WHERE company_key = ? AND doc_type = ?
+                """,
+                (company_key, doc_type),
+            ).fetchone()
     if not row:
         return None
-    path = Path(row[0])
-    return path if path.exists() else None
+    return _materialize_signature(row[0], row[1], row[2], row[3], row[4])
+
+
+def _known_signature_companies(doc_type: str = LOST_INVOICE_DOC_TYPE) -> list[dict]:
+    _init_signature_db()
+    if _signature_db_url():
+        import psycopg
+        with psycopg.connect(_signature_db_url()) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, company_name, country
+                    FROM signature_blocks
+                    WHERE doc_type = %s
+                    ORDER BY lower(company_name), lower(country)
+                    """,
+                    (doc_type,),
+                )
+                rows = cur.fetchall()
+    else:
+        with sqlite3.connect(SIGNATURE_DB) as conn:
+            rows = conn.execute(
+                """
+                SELECT id, company_name, country
+                FROM signature_blocks
+                WHERE doc_type = ?
+                ORDER BY lower(company_name), lower(country)
+                """,
+                (doc_type,),
+            ).fetchall()
+    return [{"id": r[0], "company_name": r[1], "country": r[2]} for r in rows]
+
+
+def _signature_company_by_id(sig_id: int, doc_type: str = LOST_INVOICE_DOC_TYPE) -> dict | None:
+    _init_signature_db()
+    if _signature_db_url():
+        import psycopg
+        with psycopg.connect(_signature_db_url()) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, company_name, country
+                    FROM signature_blocks
+                    WHERE id = %s AND doc_type = %s
+                    """,
+                    (sig_id, doc_type),
+                )
+                row = cur.fetchone()
+    else:
+        with sqlite3.connect(SIGNATURE_DB) as conn:
+            row = conn.execute(
+                """
+                SELECT id, company_name, country
+                FROM signature_blocks
+                WHERE id = ? AND doc_type = ?
+                """,
+                (sig_id, doc_type),
+            ).fetchone()
+    if not row:
+        return None
+    return {"id": row[0], "company_name": row[1], "country": row[2]}
 
 
 def _save_signature(company: str, country: str, image_path: Path, doc_type: str = LOST_INVOICE_DOC_TYPE) -> None:
     _init_signature_db()
     company_key = _normalize_key(f"{company}_{country}")
+    image_ext = image_path.suffix.lower() or ".png"
+    image_data = image_path.read_bytes()
     now = datetime.now().isoformat(timespec="seconds")
-    with sqlite3.connect(SIGNATURE_DB) as conn:
-        conn.execute(
-            """
-            INSERT INTO signature_blocks
-                (company_key, company_name, country, doc_type, image_path, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(company_key, doc_type) DO UPDATE SET
-                company_name = excluded.company_name,
-                country      = excluded.country,
-                image_path   = excluded.image_path,
-                updated_at   = excluded.updated_at
-            """,
-            (company_key, company, country, doc_type, str(image_path), now, now),
-        )
+    if _signature_db_url():
+        import psycopg
+        with psycopg.connect(_signature_db_url()) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO signature_blocks
+                        (company_key, company_name, country, doc_type, image_path,
+                         image_ext, image_data, created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT(company_key, doc_type) DO UPDATE SET
+                        company_name = excluded.company_name,
+                        country      = excluded.country,
+                        image_path   = excluded.image_path,
+                        image_ext    = excluded.image_ext,
+                        image_data   = excluded.image_data,
+                        updated_at   = excluded.updated_at
+                    """,
+                    (company_key, company, country, doc_type, str(image_path),
+                     image_ext, image_data, now, now),
+                )
+            conn.commit()
+    else:
+        with sqlite3.connect(SIGNATURE_DB) as conn:
+            conn.execute(
+                """
+                INSERT INTO signature_blocks
+                    (company_key, company_name, country, doc_type, image_path,
+                     image_ext, image_data, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(company_key, doc_type) DO UPDATE SET
+                    company_name = excluded.company_name,
+                    country      = excluded.country,
+                    image_path   = excluded.image_path,
+                    image_ext    = excluded.image_ext,
+                    image_data   = excluded.image_data,
+                    updated_at   = excluded.updated_at
+                """,
+                (company_key, company, country, doc_type, str(image_path),
+                 image_ext, image_data, now, now),
+            )
 
 
 async def _ask_lost_step(message: Message, state_name: str) -> None:
@@ -1025,11 +1194,57 @@ async def on_lost_invoice_start(callback: CallbackQuery, state: FSMContext):
 
     await state.set_state(LostInvoiceLetter.waiting_company)
     await state.update_data(lost_invoice={})
+    companies = _known_signature_companies()
+    if companies:
+        await callback.message.edit_text(
+            "📝 Письмо об утере инвойса\n\n"
+            "Выберите компанию из сохранённых или введите новую.\n"
+            "Так мы не плодим дубли вроде <i>SLEE medical</i> и <i>Slee Medical</i>.",
+            parse_mode="HTML",
+            reply_markup=_lost_company_kb(companies),
+        )
+    else:
+        await callback.message.edit_text(
+            "📝 Письмо об утере инвойса\n\n"
+            "Я задам вопросы по бланку, потом соберу DOCX.\n"
+            "Если блок печати и подписи для этой компании уже сохранён — возьму его из базы.\n\n"
+            "Введите название компании на английском, как должно быть в письме.",
+            parse_mode="HTML",
+        )
+    await callback.answer()
+
+
+@router.callback_query(LostInvoiceLetter.waiting_company, F.data.startswith("lost_company:"))
+async def on_lost_company_select(callback: CallbackQuery, state: FSMContext):
+    value = callback.data.split(":", 1)[1]
+    if value == "new":
+        await callback.message.edit_text(
+            "Введите название новой компании на английском, как должно быть в письме."
+        )
+        await callback.answer()
+        return
+
+    try:
+        sig_id = int(value)
+    except ValueError:
+        await callback.answer("Не понял выбор компании", show_alert=True)
+        return
+
+    company = _signature_company_by_id(sig_id)
+    if not company:
+        await callback.answer("Компания не найдена, введите её вручную", show_alert=True)
+        await callback.message.answer("Введите название компании на английском, как должно быть в письме.")
+        return
+
+    letter = {
+        "company": company["company_name"],
+        "country": company["country"],
+    }
+    await state.update_data(lost_invoice=letter)
+    await state.set_state(LostInvoiceLetter.waiting_letter_no)
     await callback.message.edit_text(
-        "📝 Письмо об утере инвойса\n\n"
-        "Я задам вопросы по бланку, потом соберу DOCX.\n"
-        "Если блок печати и подписи для этой компании уже сохранён — возьму его из базы.\n\n"
-        "Введите название компании на английском, как должно быть в письме.",
+        f"Компания: <b>{company['company_name']}, {company['country']}</b>\n\n"
+        f"{_LOST_PROMPT_BY_STATE[LostInvoiceLetter.waiting_letter_no.state]}",
         parse_mode="HTML",
     )
     await callback.answer()
