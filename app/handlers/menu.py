@@ -1231,7 +1231,7 @@ async def on_lost_invoice_start(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-@router.callback_query(LostInvoiceLetter.waiting_company, F.data.startswith("lost_company:"))
+@router.callback_query(StateFilter(LostInvoiceLetter.waiting_company), F.data.startswith("lost_company:"))
 async def on_lost_company_select(callback: CallbackQuery, state: FSMContext):
     value = callback.data.split(":", 1)[1]
     if value == "new":
