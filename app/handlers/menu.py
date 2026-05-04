@@ -422,7 +422,7 @@ def _replace_docx_paragraph(paragraph, replacements: dict[str, str], signature_p
             # Держим блок подписи на первой странице: Word сам пагинирует,
             # поэтому ограничиваем и ширину, и высоту картинки заранее.
             max_w_cm = 14.0
-            max_h_cm = 5.2
+            max_h_cm = 7.2
             try:
                 with _PILImage.open(str(signature_path)) as im:
                     w_px, h_px = im.size
@@ -474,8 +474,25 @@ def _fill_lost_invoice_template(data: dict, signature_path: Path, out_path: Path
                 for p in cell.paragraphs:
                     _replace_docx_paragraph(p, replacements, signature_path)
 
+    _remove_trailing_empty_docx_paragraphs(doc)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     doc.save(str(out_path))
+
+
+def _remove_trailing_empty_docx_paragraphs(doc) -> None:
+    """Убирает пустые абзацы в конце шаблона, которые создают пустую страницу."""
+    body = doc._body._element
+    for child in list(body)[::-1]:
+        if child.tag.endswith('}sectPr'):
+            continue
+        if not child.tag.endswith('}p'):
+            break
+        text = ''.join(child.itertext()).strip()
+        has_drawing = bool(child.xpath('.//*[local-name()="drawing"]'))
+        has_page_break = bool(child.xpath('.//*[local-name()="br" and @*[local-name()="type"]="page"]'))
+        if text or has_drawing or has_page_break:
+            break
+        body.remove(child)
 
 
 async def _finish_lost_invoice_letter(message: Message, state: FSMContext) -> None:
