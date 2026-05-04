@@ -1,9 +1,12 @@
 import asyncio
+import hashlib
 import logging
+import os
 
 from aiogram.exceptions import TelegramConflictError, TelegramBadRequest
 
 from app.bot import create_bot, create_dispatcher
+from app.config import BOT_TOKEN
 from app.handlers.start import router as start_router
 from app.handlers.id import router as id_router
 from app.handlers.upload import router as upload_router
@@ -42,6 +45,50 @@ def cleanup_old_archives(days: int = 7) -> int:
 
     return deleted
 
+
+def _polling_lock_key() -> int:
+    # Ключ завязан на токен, чтобы test/prod не блокировали друг друга,
+    # даже если используют одну Postgres-базу.
+    digest = hashlib.blake2b(BOT_TOKEN.encode("utf-8"), digest_size=8).digest()
+    return int.from_bytes(digest, "big", signed=False) & 0x7FFFFFFFFFFFFFFF
+
+
+async def acquire_polling_lock():
+    db_url = os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URL")
+    if not db_url:
+        logger.warning("DATABASE_URL is not set; polling lock is disabled")
+        return None
+
+    import psycopg
+
+    lock_key = _polling_lock_key()
+    while True:
+        try:
+            conn = await asyncio.to_thread(psycopg.connect, db_url)
+            acquired = await asyncio.to_thread(
+                lambda: conn.execute("SELECT pg_try_advisory_lock(%s)", (lock_key,)).fetchone()[0]
+            )
+            if acquired:
+                logger.info("Acquired Telegram polling lock")
+                return conn
+            await asyncio.to_thread(conn.close)
+            logger.warning("Another bot instance holds polling lock; retrying in 30s...")
+        except Exception as e:
+            logger.warning("Cannot acquire polling lock: %s — retrying in 30s...", e)
+        await asyncio.sleep(30)
+
+
+async def release_polling_lock(conn) -> None:
+    if not conn:
+        return
+    try:
+        lock_key = _polling_lock_key()
+        await asyncio.to_thread(conn.execute, "SELECT pg_advisory_unlock(%s)", (lock_key,))
+        await asyncio.to_thread(conn.close)
+        logger.info("Released Telegram polling lock")
+    except Exception as e:
+        logger.warning("Cannot release polling lock cleanly: %s", e)
+
 async def main():
     bot = create_bot()
     dp = create_dispatcher()
@@ -57,6 +104,8 @@ async def main():
     if deleted:
         print(f"Archive cleanup: deleted {deleted} folder(s) older than 7 days")
 
+    lock_conn = await acquire_polling_lock()
+
     # Ждём пока не сможем подключиться (другой инстанс мог не успеть остановиться)
     while True:
         try:
@@ -66,7 +115,10 @@ async def main():
             logger.warning(f"Cannot start polling yet: {e} — retrying in 60s...")
             await asyncio.sleep(60)
 
-    await dp.start_polling(bot)
+    try:
+        await dp.start_polling(bot)
+    finally:
+        await release_polling_lock(lock_conn)
 
 
 # Точка входа в программу
