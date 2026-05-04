@@ -520,6 +520,9 @@ async def _finish_lost_invoice_letter(message: Message, state: FSMContext) -> No
     await message.answer_document(
         FSInputFile(str(out_path)),
         caption="✅ Письмо об утере инвойса готово",
+    )
+    await message.answer(
+        "Что делаем дальше?",
         reply_markup=get_staff_inline_menu(),
     )
 
