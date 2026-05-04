@@ -180,7 +180,7 @@ def _normalize_key(value: str) -> str:
 
 
 def _safe_filename(value: str, fallback: str = "file") -> str:
-    value = re.sub(r'[<>:"/\\|?*\n\r\t]+', "_", value).strip(" ._")
+    value = re.sub(r'[,<>:"/\\|?*\n\r\t]+', "_", value).strip(" ._")
     return value[:90] or fallback
 
 
@@ -248,7 +248,27 @@ def _replace_docx_paragraph(paragraph, replacements: dict[str, str], signature_p
             paragraph.add_run().add_break()
         if signature_path and signature_path.exists():
             from docx.shared import Cm
-            paragraph.add_run().add_picture(str(signature_path), width=Cm(15))
+            from PIL import Image as _PILImage
+
+            # Держим блок подписи на первой странице: Word сам пагинирует,
+            # поэтому ограничиваем и ширину, и высоту картинки заранее.
+            max_w_cm = 14.0
+            max_h_cm = 5.2
+            try:
+                with _PILImage.open(str(signature_path)) as im:
+                    w_px, h_px = im.size
+                ratio = min(max_w_cm / w_px, max_h_cm / h_px)
+                width_cm = max(1.0, w_px * ratio)
+                height_cm = max(1.0, h_px * ratio)
+            except Exception:
+                width_cm = 10.0
+                height_cm = None
+
+            run = paragraph.add_run()
+            if height_cm is None:
+                run.add_picture(str(signature_path), width=Cm(width_cm))
+            else:
+                run.add_picture(str(signature_path), width=Cm(width_cm), height=Cm(height_cm))
         return
 
     new_text = text
