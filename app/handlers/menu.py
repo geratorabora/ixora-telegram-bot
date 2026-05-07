@@ -220,11 +220,13 @@ def _adjust_payment_invoice_xlsx(src_path: Path, out_path: Path) -> tuple[bool, 
         )
         if logo_path.exists() and not has_header_logo:
             logo = XLImage(str(logo_path))
-            logo.width = 120
-            logo.height = 80
+            logo.width = 110
+            logo.height = 55
             ws.add_image(logo, f"AT{title_row}")
 
-        ws.row_dimensions[title_row].height = max(ws.row_dimensions[title_row].height or 13, 18)
+        ws.column_dimensions["B"].width = 3
+        ws.column_dimensions["C"].width = 3
+        ws.row_dimensions[title_row].height = max(ws.row_dimensions[title_row].height or 13, 45)
 
     for ws in wb.worksheets:
         _normalize_payment_invoice_header(ws)
