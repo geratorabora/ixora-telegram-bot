@@ -148,51 +148,38 @@ def _build_upload_status(spec_infos: list[str], pdf_files: list[str]) -> str:
 PAYMENT_BANK_BLOCK_EN = [
     "IP OOO IXORA MEDICINE",
     "VAT 309915658, Reg.No 326020203217",
-    "Address: Republic of Uzbekistan, 100037, Tashkent, Yakkasaray District,",
-    "1/1 Kohinur street",
+    "Address: Republic of Uzbekistan, 100037, Tashkent, Yakkasaray District, 1/1 Kohinur street",
     "Bank: ATB “Asia Alliance Bank”",
     "Bank address: 2a, Makhtumquli str., Yashnabad district, Tashkent, Republic of Uzbekistan",
-    "SWIFT ASAC UZ 22, MFO: 01095, OKED: 64190",
-    "VAT 326020203217",
+    "SWIFT ASAC UZ 22, MFO: 01095, OKED: 64190, VAT 326020203217",
     "ac/No: 20208978105572954004 EUR",
     "ac/No: 20208840805572954004 USD",
     "ac/No: 20208643905572954004 RUB",
     "ac/No: 2020800005572954001 UZS",
-    "",
     "Correspondent bank  (for payments in RUB)",
-    "CB Moskommertsbank (JSC)",
-    "COR/account 30111810800000058685",
-    "bic 044525951",
-    "VAT 7750005612",
+    "CB Moskommertsbank (JSC) COR/account 30111810800000058685  bic 044525951 VAT 7750005612",
 ]
 
 PAYMENT_BANK_BLOCK_RU = [
     'ИП ООО "IXORA MEDICINE"',
     "ИНН 309915658, Рег.номер 326020203217",
-    "Адрес: Республика Узбекистан, 100037, Ташкент, Яккасарайский район",
-    "ул. Кохинур, д. 1/1.",
+    "Адрес: Республика Узбекистан, 100037, Ташкент, Яккасарайский район, ул. Кохинур, д. 1/1.",
     "Банк: АТБ “Азия Альянс Банк”",
-    "Адрес банка: 2а, ул Махтумкули, Яшнободский район, Ташкент,",
-    "Республика Узбекистан",
-    "SWIFT ASAC UZ 22, МФО: 01095, ОКЭД: 64190",
-    "ИНН: 326020203217",
+    "Адрес банка: 2а, ул Махтумкули, Яшнободский район, Ташкент, Республика Узбекистан",
+    "SWIFT ASAC UZ 22, МФО: 01095, ОКЭД: 64190, ИНН: 326020203217",
     "р/с: 20208978105572954004 EUR",
     "р/с: 20208840805572954004 USD",
     "р/с: 20208643905572954004 RUB",
     "р/с: 2020800005572954001 UZS",
-    "",
     "Корреспондентский банк для оплат в РУБ",
-    'КБ "Москоммерцбанк" (АО)',
-    "кор/счет 30111810800000058685",
-    "бик 044525951",
-    "ИНН 7750005612",
+    'КБ "Москоммерцбанк" (АО) кор/счет 30111810800000058685 бик 044525951 ИНН 7750005612',
 ]
 
 
 def _adjust_payment_invoice_xlsx(src_path: Path, out_path: Path) -> tuple[bool, str]:
     from copy import copy
     from openpyxl import load_workbook
-    from openpyxl.styles import Alignment, Border, Font, Side
+    from openpyxl.styles import Alignment, Border, Font
 
     wb = load_workbook(src_path)
     found = None
@@ -224,8 +211,7 @@ def _adjust_payment_invoice_xlsx(src_path: Path, out_path: Path) -> tuple[bool, 
     # Берём базовый стиль рядом с местом вставки, чтобы блок не выглядел инородно.
     template_row = max(1, start_row - 1)
     base_cell = ws.cell(template_row, start_col)
-    thin = Side(style="thin", color="000000")
-    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    border = Border()
     align = Alignment(wrap_text=True, vertical="top", horizontal="left")
     font = copy(base_cell.font) if base_cell.font else Font(name="Calibri", size=10)
     if not font.sz:
@@ -238,12 +224,15 @@ def _adjust_payment_invoice_xlsx(src_path: Path, out_path: Path) -> tuple[bool, 
         right = ws.cell(r, mid_col)
         left.value = PAYMENT_BANK_BLOCK_EN[offset] if offset < len(PAYMENT_BANK_BLOCK_EN) else ""
         right.value = PAYMENT_BANK_BLOCK_RU[offset] if offset < len(PAYMENT_BANK_BLOCK_RU) else ""
+        is_heading = offset in (0, len(PAYMENT_BANK_BLOCK_EN) - 2)
         for c in range(start_col, end_col + 1):
             cell = ws.cell(r, c)
             cell.alignment = align
-            cell.font = copy(font)
+            cell_font = copy(font)
+            cell_font.bold = is_heading
+            cell.font = cell_font
             cell.border = border
-        ws.row_dimensions[r].height = 18
+        ws.row_dimensions[r].height = 15
 
     # Две широкие колонки через merge: английский блок слева, русский справа.
     for r in range(start_row, start_row + row_count):
