@@ -1337,36 +1337,36 @@ async def on_adjust_payment_invoice_start(callback: CallbackQuery, state: FSMCon
 
 @router.message(AdjustPaymentInvoice.waiting_file, F.document)
 async def on_adjust_payment_invoice_file(message: Message, state: FSMContext):
-    doc = message.document
-    fname = doc.file_name or ""
-    if not fname.lower().endswith(".xlsx"):
-        await message.answer("Пришлите именно XLSX-файл инвойса.")
-        return
-
-    user_dir = TMP_DIR / str(message.from_user.id) / "adjust_payment_invoice"
-    if user_dir.exists():
-        shutil.rmtree(user_dir)
-    user_dir.mkdir(parents=True, exist_ok=True)
-
-    src_path = user_dir / fname
-    tg_file = await message.bot.get_file(doc.file_id)
-    await message.bot.download_file(tg_file.file_path, destination=str(src_path))
-
-    out_name = f"{src_path.stem}_исправлен.xlsx"
-    out_path = user_dir / _safe_filename(out_name)
-
+    progress = await message.answer("⏳ Обрабатываю инвойс...")
     try:
+        doc = message.document
+        fname = doc.file_name or ""
+        if not fname.lower().endswith(".xlsx"):
+            await progress.edit_text("Пришлите именно XLSX-файл инвойса.")
+            return
+
+        user_dir = TMP_DIR / str(message.from_user.id) / "adjust_payment_invoice" / str(int(time.time() * 1000))
+        user_dir.mkdir(parents=True, exist_ok=True)
+
+        src_path = user_dir / fname
+        tg_file = await message.bot.get_file(doc.file_id)
+        await message.bot.download_file(tg_file.file_path, destination=str(src_path))
+
+        out_name = f"{src_path.stem}_исправлен.xlsx"
+        out_path = user_dir / _safe_filename(out_name)
+
         ok, info = _adjust_payment_invoice_xlsx(src_path, out_path)
     except Exception as e:
         logger.exception("Payment invoice adjustment failed")
-        await message.answer(f"❌ Не удалось обработать файл: {e}")
+        await progress.edit_text(f"❌ Не удалось обработать файл: {e}")
         return
 
     if not ok:
-        await message.answer(f"❌ {info}")
+        await progress.edit_text(f"❌ {info}")
         return
 
     await state.clear()
+    await progress.edit_text("✅ Инвойс скорректирован, отправляю файл...")
     await message.answer_document(
         FSInputFile(str(out_path)),
         caption=f"✅ Инвойс скорректирован\n{info}",
