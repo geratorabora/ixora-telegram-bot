@@ -215,18 +215,18 @@ def _adjust_payment_invoice_xlsx(src_path: Path, out_path: Path) -> tuple[bool, 
 
         # Новый логотип ставим рядом с заголовком, не трогая таблицу и существующие подписи/печати.
         has_header_logo = any(
-            pos and pos[0] == title_row and pos[1] >= 40
+            pos and title_row - 1 <= pos[0] <= title_row and pos[1] >= 40
             for pos in (_anchor_pos(img) for img in getattr(ws, "_images", []))
         )
         if logo_path.exists() and not has_header_logo:
             logo = XLImage(str(logo_path))
-            logo.width = 110
-            logo.height = 55
-            ws.add_image(logo, f"AT{title_row}")
+            logo.width = 105
+            logo.height = 42
+            ws.add_image(logo, f"AT{max(1, title_row - 1)}")
 
         ws.column_dimensions["B"].width = 3
         ws.column_dimensions["C"].width = 3
-        ws.row_dimensions[title_row].height = max(ws.row_dimensions[title_row].height or 13, 45)
+        ws.row_dimensions[title_row].height = max(ws.row_dimensions[title_row].height or 13, 28)
 
     for ws in wb.worksheets:
         _normalize_payment_invoice_header(ws)
