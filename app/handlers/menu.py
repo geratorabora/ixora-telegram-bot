@@ -81,6 +81,9 @@ class LostInvoiceLetter(StatesGroup):
     waiting_invoice_date = State()
     waiting_signature    = State()
 
+class AdjustPaymentInvoice(StatesGroup):
+    waiting_file = State()
+
 
 def _merge_upload_kb() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
@@ -137,6 +140,126 @@ def _build_upload_status(spec_infos: list[str], pdf_files: list[str]) -> str:
     else:
         lines.append("  ⚠️ Не загружен — нужен для блока подписей")
     return '\n'.join(lines)
+
+
+# =========================
+# Мастер "Корректировка инвойса на оплату"
+# =========================
+PAYMENT_BANK_BLOCK_EN = [
+    "IP OOO IXORA MEDICINE",
+    "VAT 309915658, Reg.No 326020203217",
+    "Address: Republic of Uzbekistan, 100037, Tashkent, Yakkasaray District,",
+    "1/1 Kohinur street",
+    "Bank: ATB “Asia Alliance Bank”",
+    "Bank address: 2a, Makhtumquli str., Yashnabad district, Tashkent, Republic of Uzbekistan",
+    "SWIFT ASAC UZ 22, MFO: 01095, OKED: 64190",
+    "VAT 326020203217",
+    "ac/No: 20208978105572954004 EUR",
+    "ac/No: 20208840805572954004 USD",
+    "ac/No: 20208643905572954004 RUB",
+    "ac/No: 2020800005572954001 UZS",
+    "",
+    "Correspondent bank  (for payments in RUB)",
+    "CB Moskommertsbank (JSC)",
+    "COR/account 30111810800000058685",
+    "bic 044525951",
+    "VAT 7750005612",
+]
+
+PAYMENT_BANK_BLOCK_RU = [
+    'ИП ООО "IXORA MEDICINE"',
+    "ИНН 309915658, Рег.номер 326020203217",
+    "Адрес: Республика Узбекистан, 100037, Ташкент, Яккасарайский район",
+    "ул. Кохинур, д. 1/1.",
+    "Банк: АТБ “Азия Альянс Банк”",
+    "Адрес банка: 2а, ул Махтумкули, Яшнободский район, Ташкент,",
+    "Республика Узбекистан",
+    "SWIFT ASAC UZ 22, МФО: 01095, ОКЭД: 64190",
+    "ИНН: 326020203217",
+    "р/с: 20208978105572954004 EUR",
+    "р/с: 20208840805572954004 USD",
+    "р/с: 20208643905572954004 RUB",
+    "р/с: 2020800005572954001 UZS",
+    "",
+    "Корреспондентский банк для оплат в РУБ",
+    'КБ "Москоммерцбанк" (АО)',
+    "кор/счет 30111810800000058685",
+    "бик 044525951",
+    "ИНН 7750005612",
+]
+
+
+def _adjust_payment_invoice_xlsx(src_path: Path, out_path: Path) -> tuple[bool, str]:
+    from copy import copy
+    from openpyxl import load_workbook
+    from openpyxl.styles import Alignment, Border, Font, Side
+
+    wb = load_workbook(src_path)
+    found = None
+    for ws in wb.worksheets:
+        for row in ws.iter_rows():
+            for cell in row:
+                value = str(cell.value or "").strip().lower()
+                if "банковские реквизиты" in value:
+                    found = (ws, cell.row, cell.column)
+                    break
+            if found:
+                break
+        if found:
+            break
+
+    if not found:
+        return False, "Не нашёл блок «Банковские реквизиты»."
+
+    ws, start_row, start_col = found
+    max_col = max(ws.max_column, start_col + 44)
+    end_col = max_col
+    mid_col = start_col + max(10, (end_col - start_col + 1) // 2)
+
+    # Удаляем старый банковский блок строго от найденной строки до конца листа.
+    rows_to_delete = ws.max_row - start_row + 1
+    if rows_to_delete > 0:
+        ws.delete_rows(start_row, rows_to_delete)
+
+    # Берём базовый стиль рядом с местом вставки, чтобы блок не выглядел инородно.
+    template_row = max(1, start_row - 1)
+    base_cell = ws.cell(template_row, start_col)
+    thin = Side(style="thin", color="000000")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    align = Alignment(wrap_text=True, vertical="top", horizontal="left")
+    font = copy(base_cell.font) if base_cell.font else Font(name="Calibri", size=10)
+    if not font.sz:
+        font = Font(name=font.name or "Calibri", size=10)
+
+    row_count = max(len(PAYMENT_BANK_BLOCK_EN), len(PAYMENT_BANK_BLOCK_RU))
+    for offset in range(row_count):
+        r = start_row + offset
+        left = ws.cell(r, start_col)
+        right = ws.cell(r, mid_col)
+        left.value = PAYMENT_BANK_BLOCK_EN[offset] if offset < len(PAYMENT_BANK_BLOCK_EN) else ""
+        right.value = PAYMENT_BANK_BLOCK_RU[offset] if offset < len(PAYMENT_BANK_BLOCK_RU) else ""
+        for c in range(start_col, end_col + 1):
+            cell = ws.cell(r, c)
+            cell.alignment = align
+            cell.font = copy(font)
+            cell.border = border
+        ws.row_dimensions[r].height = 18
+
+    # Две широкие колонки через merge: английский блок слева, русский справа.
+    for r in range(start_row, start_row + row_count):
+        ws.merge_cells(start_row=r, start_column=start_col, end_row=r, end_column=mid_col - 1)
+        ws.merge_cells(start_row=r, start_column=mid_col, end_row=r, end_column=end_col)
+
+    ws.column_dimensions[ws.cell(1, start_col).column_letter].width = max(
+        ws.column_dimensions[ws.cell(1, start_col).column_letter].width or 8, 18
+    )
+    ws.column_dimensions[ws.cell(1, mid_col).column_letter].width = max(
+        ws.column_dimensions[ws.cell(1, mid_col).column_letter].width or 8, 18
+    )
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    wb.save(out_path)
+    return True, f"Заменил банковские реквизиты на листе «{ws.title}», строка {start_row}."
 
 
 # =========================
@@ -1201,7 +1324,75 @@ async def on_upload_stock_cancel(message: Message, state: FSMContext):
 
 
 # =========================
-# 5b) Письмо об утере инвойса (staff only)
+# 5b) Корректировка инвойса на оплату (staff only)
+# =========================
+@router.callback_query(F.data == "staff:adjust_payment_invoice")
+async def on_adjust_payment_invoice_start(callback: CallbackQuery, state: FSMContext):
+    user_id = callback.from_user.id
+    allowed = is_staff(user_id)
+    log_staff_event(user_id, callback.from_user.username, "staff:adjust_payment_invoice", allowed)
+    if not allowed:
+        await deny_staff_access(callback, action="staff:adjust_payment_invoice")
+        return
+
+    await state.set_state(AdjustPaymentInvoice.waiting_file)
+    await callback.message.edit_text(
+        "🏦 Корректировка инвойса на оплату\n\n"
+        "Пришлите XLSX-инвойс. Я найду блок <b>«Банковские реквизиты»</b>, "
+        "удалю его до конца листа и вставлю новый двуязычный блок.\n\n"
+        "Для отмены напишите: ОТМЕНА",
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router.message(AdjustPaymentInvoice.waiting_file, F.document)
+async def on_adjust_payment_invoice_file(message: Message, state: FSMContext):
+    doc = message.document
+    fname = doc.file_name or ""
+    if not fname.lower().endswith(".xlsx"):
+        await message.answer("Пришлите именно XLSX-файл инвойса.")
+        return
+
+    user_dir = TMP_DIR / str(message.from_user.id) / "adjust_payment_invoice"
+    if user_dir.exists():
+        shutil.rmtree(user_dir)
+    user_dir.mkdir(parents=True, exist_ok=True)
+
+    src_path = user_dir / fname
+    tg_file = await message.bot.get_file(doc.file_id)
+    await message.bot.download_file(tg_file.file_path, destination=str(src_path))
+
+    out_name = f"{src_path.stem}_исправлен.xlsx"
+    out_path = user_dir / _safe_filename(out_name)
+
+    try:
+        ok, info = _adjust_payment_invoice_xlsx(src_path, out_path)
+    except Exception as e:
+        logger.exception("Payment invoice adjustment failed")
+        await message.answer(f"❌ Не удалось обработать файл: {e}")
+        return
+
+    if not ok:
+        await message.answer(f"❌ {info}")
+        return
+
+    await state.clear()
+    await message.answer_document(
+        FSInputFile(str(out_path)),
+        caption=f"✅ Инвойс скорректирован\n{info}",
+    )
+    await message.answer("Что делаем дальше?", reply_markup=get_staff_inline_menu())
+
+
+@router.message(AdjustPaymentInvoice.waiting_file, F.text.lower() == "отмена")
+async def on_adjust_payment_invoice_cancel(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("Корректировка отменена.", reply_markup=get_staff_inline_menu())
+
+
+# =========================
+# 5c) Письмо об утере инвойса (staff only)
 # =========================
 @router.callback_query(F.data == "staff:lost_invoice_letter")
 async def on_lost_invoice_start(callback: CallbackQuery, state: FSMContext):
@@ -1358,7 +1549,7 @@ async def on_lost_invoice_signature_wrong(message: Message):
 
 
 # =========================
-# 5c) Запуск мастера
+# 5d) Запуск мастера
 # =========================
 @router.callback_query(F.data == "staff:merge_specs")
 async def on_merge_specs_start(callback: CallbackQuery, state: FSMContext):

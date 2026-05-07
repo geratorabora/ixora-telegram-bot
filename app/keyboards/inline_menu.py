@@ -126,6 +126,13 @@ def get_staff_inline_menu() -> InlineKeyboardMarkup:
 
     builder.add(
         InlineKeyboardButton(
+            text="🏦 Корректировка инвойса на оплату",
+            callback_data="staff:adjust_payment_invoice",
+        )
+    )
+
+    builder.add(
+        InlineKeyboardButton(
             text="⬅ Назад",
             callback_data="menu:back",
         )
