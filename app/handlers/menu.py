@@ -187,21 +187,12 @@ def _adjust_payment_invoice_xlsx(src_path: Path, out_path: Path) -> tuple[bool, 
 
     logo_path = Path(__file__).parent.parent / "assets" / "ixora_logo_red_1.png"
 
-    def _anchor_row(img) -> int | None:
+    def _anchor_pos(img) -> tuple[int, int] | None:
         anchor = getattr(img, "anchor", None)
         marker = getattr(anchor, "_from", None)
         if marker is None:
             return None
-        return int(marker.row) + 1
-
-    def _shift_image_rows(img, delta: int) -> None:
-        anchor = getattr(img, "anchor", None)
-        marker_from = getattr(anchor, "_from", None)
-        marker_to = getattr(anchor, "to", None)
-        if marker_from is not None:
-            marker_from.row = max(0, marker_from.row + delta)
-        if marker_to is not None:
-            marker_to.row = max(0, marker_to.row + delta)
+        return int(marker.row) + 1, int(marker.col) + 1
 
     def _normalize_payment_invoice_header(ws) -> None:
         title_row = None
@@ -217,42 +208,23 @@ def _adjust_payment_invoice_xlsx(src_path: Path, out_path: Path) -> tuple[bool, 
         if not title_row:
             return
 
-        # Убираем старый банковский блок над названием инвойса и поднимаем название к началу листа.
-        rows_to_delete = max(0, title_row - 2)
-        if rows_to_delete:
-            delete_from = 2
-            delete_to = title_row - 1
-            for merged in list(ws.merged_cells.ranges):
-                if merged.min_row <= delete_to and merged.max_row >= delete_from:
-                    ws.unmerge_cells(str(merged))
+        # Верхний банковский блок из 1С не удаляем физически: в этих выгрузках много merge-областей
+        # и картинок, а удаление строк легко портит drawing XML. Скрываем строки выше "Инвойс".
+        for r in range(1, title_row):
+            ws.row_dimensions[r].hidden = True
 
-            # Старый логотип слева удаляем, остальные картинки (подпись/печать) сдвигаем вместе с листом.
-            kept_images = []
-            for img in list(getattr(ws, "_images", [])):
-                img_row = _anchor_row(img)
-                if img_row is not None and img_row < title_row:
-                    continue
-                _shift_image_rows(img, -rows_to_delete)
-                kept_images.append(img)
-            ws._images = kept_images
-
-            ws.delete_rows(delete_from, rows_to_delete)
-
-        # Если файл уже прогоняли через мастер, убираем прежний верхний логотип перед вставкой нового.
-        ws._images = [
-            img for img in list(getattr(ws, "_images", []))
-            if (_anchor_row(img) or 9999) > 6
-        ]
-
-        # Новый логотип справа не должен занимать первые колонки и разъезжать номерную колонку.
-        if logo_path.exists():
+        # Новый логотип ставим рядом с заголовком, не трогая таблицу и существующие подписи/печати.
+        has_header_logo = any(
+            pos and pos[0] == title_row and pos[1] >= 40
+            for pos in (_anchor_pos(img) for img in getattr(ws, "_images", []))
+        )
+        if logo_path.exists() and not has_header_logo:
             logo = XLImage(str(logo_path))
             logo.width = 120
             logo.height = 80
-            ws.add_image(logo, "AT2")
+            ws.add_image(logo, f"AT{title_row}")
 
-        ws.row_dimensions[1].height = 8
-        ws.row_dimensions[2].height = max(ws.row_dimensions[2].height or 13, 18)
+        ws.row_dimensions[title_row].height = max(ws.row_dimensions[title_row].height or 13, 18)
 
     for ws in wb.worksheets:
         _normalize_payment_invoice_header(ws)
