@@ -264,11 +264,26 @@ def _adjust_payment_invoice_xlsx(src_path: Path, out_path: Path) -> tuple[bool, 
             )
 
     def _adjust_payment_currency_rate(ws, stop_row: int) -> None:
+        def _find_currency(text: str) -> str | None:
+            normalized = (
+                text.replace("\xa0", " ")
+                .replace("руб. рф", "руб рф")
+                .upper()
+            )
+            if re.search(r"\bUSD\b|ДОЛЛАР", normalized):
+                return "USD"
+            if re.search(r"\bEUR\b|ЕВРО", normalized):
+                return "EUR"
+            if re.search(r"\bRUB\b|РУБ", normalized):
+                return "RUB"
+            if re.search(r"\bUZS\b|СУМ", normalized):
+                return "UZS"
+            return None
+
         doc_currency = None
         payment_currency = None
         rate_row = None
         rate_col = None
-        currency_re = re.compile(r"\b(USD|EUR|RUB|UZS)\b", re.IGNORECASE)
 
         for row in ws.iter_rows(min_row=1, max_row=max(1, stop_row)):
             for cell in row:
@@ -276,14 +291,10 @@ def _adjust_payment_invoice_xlsx(src_path: Path, out_path: Path) -> tuple[bool, 
                 low = text.lower()
 
                 if doc_currency is None and "всего наимен" in low and "сумм" in low:
-                    matches = currency_re.findall(text)
-                    if matches:
-                        doc_currency = matches[-1].upper()
+                    doc_currency = _find_currency(text)
 
                 if payment_currency is None and "валюта платеж" in low:
-                    matches = currency_re.findall(text)
-                    if matches:
-                        payment_currency = matches[-1].upper()
+                    payment_currency = _find_currency(text)
 
                 if rate_row is None and low.startswith("курс"):
                     rate_row = cell.row
