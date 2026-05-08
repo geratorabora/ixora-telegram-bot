@@ -288,12 +288,13 @@ def _adjust_payment_invoice_xlsx(src_path: Path, out_path: Path) -> tuple[bool, 
         ws.merge_cells(start_row=r, start_column=start_col, end_row=r, end_column=mid_col - 1)
         ws.merge_cells(start_row=r, start_column=mid_col, end_row=r, end_column=end_col)
 
-    ws.column_dimensions[ws.cell(1, start_col).column_letter].width = max(
-        ws.column_dimensions[ws.cell(1, start_col).column_letter].width or 8, 18
-    )
     ws.column_dimensions[ws.cell(1, mid_col).column_letter].width = max(
         ws.column_dimensions[ws.cell(1, mid_col).column_letter].width or 8, 18
     )
+    # Банковский блок начинается в B, поэтому финально фиксируем первые колонки после всех merge/width-операций.
+    ws.column_dimensions["A"].width = 3
+    ws.column_dimensions["B"].width = 3
+    ws.column_dimensions["C"].width = 3
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     wb.save(out_path)
