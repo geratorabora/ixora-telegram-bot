@@ -236,6 +236,33 @@ def _adjust_payment_invoice_xlsx(src_path: Path, out_path: Path) -> tuple[bool, 
             if rows_intersect and cols_intersect:
                 ws.unmerge_cells(str(merged))
 
+    def _enable_manufacturer_wrap(ws, stop_row: int) -> None:
+        header_cell = None
+        for row in ws.iter_rows(min_row=1, max_row=max(1, stop_row)):
+            for cell in row:
+                text = str(cell.value or "").strip().lower()
+                if "изготовитель" in text or "manufacturer" in text:
+                    header_cell = cell
+                    break
+            if header_cell:
+                break
+
+        if not header_cell:
+            return
+
+        col = header_cell.column
+        for r in range(header_cell.row, stop_row + 1):
+            cell = ws.cell(r, col)
+            old = cell.alignment
+            cell.alignment = Alignment(
+                horizontal=old.horizontal,
+                vertical="top",
+                text_rotation=old.textRotation,
+                wrap_text=True,
+                shrink_to_fit=old.shrinkToFit,
+                indent=old.indent,
+            )
+
     for ws in wb.worksheets:
         _normalize_payment_invoice_header(ws)
 
@@ -258,6 +285,8 @@ def _adjust_payment_invoice_xlsx(src_path: Path, out_path: Path) -> tuple[bool, 
     max_col = max(ws.max_column, start_col + 44)
     end_col = max_col
     mid_col = start_col + max(10, int((end_col - start_col + 1) * 0.65))
+
+    _enable_manufacturer_wrap(ws, start_row - 1)
 
     # Удаляем старый банковский блок строго от найденной строки до конца листа.
     rows_to_delete = ws.max_row - start_row + 1
