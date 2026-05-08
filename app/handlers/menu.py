@@ -229,6 +229,13 @@ def _adjust_payment_invoice_xlsx(src_path: Path, out_path: Path) -> tuple[bool, 
         ws.column_dimensions["C"].width = 3
         ws.row_dimensions[title_row].height = max(ws.row_dimensions[title_row].height or 13, 28)
 
+    def _unmerge_intersections(ws, min_row: int, max_row: int, min_col: int, max_col: int) -> None:
+        for merged in list(ws.merged_cells.ranges):
+            rows_intersect = merged.min_row <= max_row and merged.max_row >= min_row
+            cols_intersect = merged.min_col <= max_col and merged.max_col >= min_col
+            if rows_intersect and cols_intersect:
+                ws.unmerge_cells(str(merged))
+
     for ws in wb.worksheets:
         _normalize_payment_invoice_header(ws)
 
@@ -255,6 +262,7 @@ def _adjust_payment_invoice_xlsx(src_path: Path, out_path: Path) -> tuple[bool, 
     # Удаляем старый банковский блок строго от найденной строки до конца листа.
     rows_to_delete = ws.max_row - start_row + 1
     if rows_to_delete > 0:
+        _unmerge_intersections(ws, start_row, ws.max_row, 1, ws.max_column)
         ws.delete_rows(start_row, rows_to_delete)
 
     # Берём базовый стиль рядом с местом вставки, чтобы блок не выглядел инородно.
@@ -284,6 +292,7 @@ def _adjust_payment_invoice_xlsx(src_path: Path, out_path: Path) -> tuple[bool, 
         ws.row_dimensions[r].height = 15
 
     # Две широкие колонки через merge: английский блок слева, русский справа.
+    _unmerge_intersections(ws, start_row, start_row + row_count - 1, start_col, end_col)
     for r in range(start_row, start_row + row_count):
         ws.merge_cells(start_row=r, start_column=start_col, end_row=r, end_column=mid_col - 1)
         ws.merge_cells(start_row=r, start_column=mid_col, end_row=r, end_column=end_col)
