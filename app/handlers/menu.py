@@ -263,6 +263,54 @@ def _adjust_payment_invoice_xlsx(src_path: Path, out_path: Path) -> tuple[bool, 
                 indent=old.indent,
             )
 
+    def _adjust_payment_currency_rate(ws, stop_row: int) -> None:
+        doc_currency = None
+        payment_currency = None
+        rate_row = None
+        rate_col = None
+        currency_re = re.compile(r"\b(USD|EUR|RUB|UZS)\b", re.IGNORECASE)
+
+        for row in ws.iter_rows(min_row=1, max_row=max(1, stop_row)):
+            for cell in row:
+                text = str(cell.value or "").replace("\xa0", " ").strip()
+                low = text.lower()
+
+                if doc_currency is None and "всего наимен" in low and "сумм" in low:
+                    matches = currency_re.findall(text)
+                    if matches:
+                        doc_currency = matches[-1].upper()
+
+                if payment_currency is None and "валюта платеж" in low:
+                    matches = currency_re.findall(text)
+                    if matches:
+                        payment_currency = matches[-1].upper()
+
+                if rate_row is None and low.startswith("курс"):
+                    rate_row = cell.row
+                    rate_col = cell.column
+
+        if not (doc_currency and payment_currency and rate_row and rate_col):
+            return
+
+        if doc_currency == payment_currency:
+            ws.row_dimensions[rate_row].hidden = True
+            return
+
+        cell = ws.cell(rate_row, rate_col)
+        cell.value = "Курс: будет указан в день оплаты"
+        old = cell.alignment
+        cell.alignment = Alignment(
+            horizontal=old.horizontal,
+            vertical=old.vertical or "top",
+            text_rotation=old.textRotation,
+            wrap_text=True,
+            shrink_to_fit=old.shrinkToFit,
+            indent=old.indent,
+        )
+        cell_font = copy(cell.font)
+        cell_font.italic = True
+        cell.font = cell_font
+
     for ws in wb.worksheets:
         _normalize_payment_invoice_header(ws)
 
@@ -287,6 +335,7 @@ def _adjust_payment_invoice_xlsx(src_path: Path, out_path: Path) -> tuple[bool, 
     mid_col = start_col + max(10, int((end_col - start_col + 1) * 0.65))
 
     _enable_manufacturer_wrap(ws, start_row - 1)
+    _adjust_payment_currency_rate(ws, start_row - 1)
 
     # Удаляем старый банковский блок строго от найденной строки до конца листа.
     rows_to_delete = ws.max_row - start_row + 1
