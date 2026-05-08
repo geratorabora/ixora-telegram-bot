@@ -222,7 +222,7 @@ def _adjust_payment_invoice_xlsx(src_path: Path, out_path: Path) -> tuple[bool, 
             logo = XLImage(str(logo_path))
             logo.width = 105
             logo.height = 42
-            ws.add_image(logo, f"AT{max(1, title_row - 1)}")
+            ws.add_image(logo, f"BB{max(1, title_row - 1)}")
 
         ws.column_dimensions["A"].width = 3
         ws.column_dimensions["B"].width = 3
@@ -257,7 +257,7 @@ def _adjust_payment_invoice_xlsx(src_path: Path, out_path: Path) -> tuple[bool, 
     ws, start_row, start_col = found
     max_col = max(ws.max_column, start_col + 44)
     end_col = max_col
-    mid_col = start_col + max(10, (end_col - start_col + 1) // 2)
+    mid_col = start_col + max(10, int((end_col - start_col + 1) * 0.65))
 
     # Удаляем старый банковский блок строго от найденной строки до конца листа.
     rows_to_delete = ws.max_row - start_row + 1
