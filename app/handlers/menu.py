@@ -224,8 +224,8 @@ def _adjust_payment_invoice_xlsx(src_path: Path, out_path: Path) -> tuple[bool, 
             logo.height = 42
             ws.add_image(logo, f"AT{max(1, title_row - 1)}")
 
-        ws.column_dimensions["B"].width = 3
-        ws.column_dimensions["C"].width = 3
+        ws.column_dimensions["B"].width = 5
+        ws.column_dimensions["C"].width = 1
         ws.row_dimensions[title_row].height = max(ws.row_dimensions[title_row].height or 13, 28)
 
     for ws in wb.worksheets:
